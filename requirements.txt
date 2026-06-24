@@ -1,7 +1,9 @@
+# Core
 requests>=2.32.0
 anthropic>=0.40.0
 python-dotenv>=1.0.0
 functions-framework>=3.5.0
-# Cloud backends (optional — install only when using Firestore or GCS)
+
+# Cloud backends — uncomment when deploying with STATE_BACKEND=firestore or gcs
 # google-cloud-firestore>=2.19.0
 # google-cloud-storage>=2.18.0
