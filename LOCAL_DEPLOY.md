@@ -26,7 +26,8 @@ cp .env.example .env
 # Edita .env con tu editor favorito:
 #   EDGAR_USER_AGENT="Tu Nombre tu@email.com"   ← obligatorio
 #   ANTHROPIC_API_KEY=sk-ant-...                 ← opcional (fallback a texto plano)
-#   SLACK_WEBHOOK_URL=https://hooks.slack.com/... ← opcional (sin esto usa --dry-run)
+#   TELEGRAM_BOT_TOKEN=... ← opcional (sin esto usa --dry-run)
+#   TELEGRAM_CHAT_ID=...                               ← opcional
 
 # 5. Prueba que funciona antes de programar
 make run-dry
@@ -212,6 +213,6 @@ make logs-local        # tail del log local
 - Asegúrate de que `.env` existe en el directorio del proyecto
 - El cron no hereda tu shell, entonces las variables de entorno deben estar en `.env` o en la línea del cron con `KEY=VALUE comando`
 
-**Señales duplicadas en Slack:**
+**Señales duplicadas en Telegram:**
 - Revisa que `state.json` persiste entre ejecuciones (no en `/tmp`)
 - Verifica `STATE_FILE_PATH` en tu `.env`

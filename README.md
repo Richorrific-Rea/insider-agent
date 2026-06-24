@@ -1,6 +1,6 @@
 # insider-agent
 
-Pipeline programado que sondea SEC EDGAR (Form 4), detecta **compras de insiders** con valor de señal, las enriquece con un LLM y avisa por Slack.
+Pipeline programado que sondea SEC EDGAR (Form 4), detecta **compras de insiders** con valor de señal, las enriquece con un LLM y avisa por Telegram.
 
 > **Aviso legal:** Este sistema genera **ideas para investigar**, no recomendaciones de inversión. Toda señal incluye el disclaimer correspondiente. No uses este software como base para decisiones financieras.
 
@@ -19,7 +19,7 @@ edgar_client.py  ──→  form4_parser.py  ──→  signals.py
                                                   │
                                             enrich.py (Anthropic)
                                                   │
-                                            notify.py (Slack)
+                                            notify.py (Telegram)
                                                   │
                                             state.py (dedup)
 ```
@@ -33,7 +33,7 @@ edgar_client.py  ──→  form4_parser.py  ──→  signals.py
 | `form4_parser.py` | Parsea ownershipDocument XML → `Transaction` |
 | `signals.py` | Filtros duros + detección de clusters |
 | `enrich.py` | Brief factual vía Anthropic API (fallback a texto plano) |
-| `notify.py` | Post a Slack con Block Kit + disclaimer |
+| `notify.py` | Envía mensaje a Telegram (MarkdownV2) + disclaimer |
 | `state.py` | Dedup de accessions + caché cross-poll (File / Firestore / GCS) |
 | `pipeline.py` | Orquesta el ciclo completo |
 | `main.py` | Entrypoint cron/local (`--once`, `--dry-run`) |
@@ -53,10 +53,10 @@ cp .env.example .env
 ## Ejecución local
 
 ```bash
-# Dry-run: imprime señales en stdout sin postear a Slack
+# Dry-run: imprime señales en stdout sin postear a Telegram
 python main.py --once --dry-run
 
-# Live: postea a Slack
+# Live: envía a Telegram
 python main.py --once
 ```
 
@@ -69,7 +69,7 @@ Las obligatorias:
 
 Las opcionales clave:
 - `ANTHROPIC_API_KEY` — para briefs enriquecidos; sin ella usa texto plano
-- `SLACK_WEBHOOK_URL` — para notificaciones; sin ella solo funciona `--dry-run`
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — para notificaciones; sin ellos solo funciona `--dry-run`
 
 ---
 
@@ -113,6 +113,6 @@ pytest tests/ -v
 
 ## Guardrails
 
-- **Sin asesoría financiera:** El LLM tiene un system prompt que prohíbe explícitamente recomendaciones de precio. Slack incluye siempre el disclaimer.
+- **Sin asesoría financiera:** El LLM tiene un system prompt que prohíbe explícitamente recomendaciones de precio. Telegram incluye siempre el disclaimer.
 - **EDGAR fair access:** User-Agent identificable + ≤10 req/s (≥0.15 s entre requests).
 - **Secretos fuera del repo:** `.env` y `state.json` están en `.gitignore`.

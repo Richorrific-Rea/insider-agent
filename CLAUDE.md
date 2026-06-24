@@ -10,7 +10,7 @@ Genera **ideas para investigar**, no recomendaciones de inversión.
 - `form4_parser.py` → XML ownershipDocument → `Transaction`
 - `signals.py` → `passes_filters` + `detect_clusters` → `Signal`
 - `enrich.py` → Anthropic API (fallback a texto plano)
-- `notify.py` → Slack Block Kit + disclaimer
+- `notify.py` → Telegram MarkdownV2 + disclaimer
 - `state.py` → `StateStore` interface + FileStateStore / FirestoreStateStore / GCSStateStore
 - `pipeline.py` → `run_once(cfg, dry_run)`
 - `main.py` → CLI (`--once`, `--dry-run`)
@@ -34,14 +34,14 @@ python -m py_compile config.py edgar_client.py form4_parser.py signals.py enrich
 ```
 
 ## Guardrails no negociables
-1. **Sin asesoría financiera** — el system prompt del LLM + el disclaimer de Slack son obligatorios.
+1. **Sin asesoría financiera** — el system prompt del LLM + el disclaimer de Telegram son obligatorios.
 2. **EDGAR fair access** — User-Agent con contacto + ≤10 req/s. No quitar el rate limiter.
 3. **Secretos fuera del repo** — `.env` y `state.json` en `.gitignore`. Nunca commitear claves.
 
 ## Dependencias externas
 - SEC EDGAR (sin API key, solo User-Agent)
 - Anthropic API (opcional; fallback si falta la key)
-- Slack incoming webhook (opcional; `--dry-run` si falta)
+- Telegram bot token + chat ID (opcionales; `--dry-run` si faltan)
 - GCP (opcional; solo si STATE_BACKEND=firestore o gcs)
 
 ## Fases del proyecto

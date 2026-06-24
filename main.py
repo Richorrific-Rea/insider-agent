@@ -3,7 +3,7 @@ Local / cron entrypoint.
 
 Usage:
   python main.py --once           # run one cycle (live)
-  python main.py --once --dry-run # run one cycle, print instead of posting to Slack
+  python main.py --once --dry-run # run one cycle, print instead of sending to Telegram
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print signals to stdout instead of posting to Slack.",
+        help="Print signals to stdout instead of sending to Telegram.",
     )
     args = parser.parse_args()
 
