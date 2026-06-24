@@ -32,8 +32,9 @@ class Config:
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
-    # ── Slack ──────────────────────────────────────────────────────────────
-    slack_webhook_url: str = ""
+    # ── Telegram ───────────────────────────────────────────────────────────
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     # ── State / storage ────────────────────────────────────────────────────
     state_backend: str = "file"         # "file" | "firestore" | "gcs"
@@ -89,7 +90,8 @@ def load_config() -> Config:
         cluster_min_insiders=_int("CLUSTER_MIN_INSIDERS", 2),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-        slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL", ""),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         state_backend=os.getenv("STATE_BACKEND", "file"),
         state_file_path=os.getenv("STATE_FILE_PATH", "state.json"),
         gcp_project=os.getenv("GCP_PROJECT", ""),

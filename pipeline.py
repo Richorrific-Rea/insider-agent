@@ -97,7 +97,8 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
         send_signal(
             signal=signal,
             brief=brief,
-            webhook_url=cfg.slack_webhook_url,
+            bot_token=cfg.telegram_bot_token,
+            chat_id=cfg.telegram_chat_id,
             dry_run=dry_run,
         )
         notified += 1

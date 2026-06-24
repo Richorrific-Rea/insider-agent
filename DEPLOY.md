@@ -60,7 +60,13 @@ make gcp-create-secrets
 Te pedirá pegar el valor de cada secreto interactivamente:
 - `EDGAR_USER_AGENT` → `"Ricardo Rea ricarorea2584@gmail.com"`
 - `ANTHROPIC_API_KEY` → tu clave de Anthropic
-- `SLACK_WEBHOOK_URL` → tu webhook de Slack
+- `TELEGRAM_BOT_TOKEN` → token de tu bot de Telegram (de @BotFather)
+- `TELEGRAM_CHAT_ID` → ID del chat donde llegan las señales
+
+> **Cómo obtener tu bot y chat ID:**
+> 1. Abre Telegram → busca `@BotFather` → `/newbot` → copia el token
+> 2. Envíale cualquier mensaje a tu bot
+> 3. `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` → busca `"chat":{"id":...}`
 
 Los secretos **nunca tocan el repositorio ni el código** — GCP los inyecta como variables de entorno en tiempo de ejecución.
 
@@ -126,7 +132,8 @@ make deploy            # re-deploy a Cloud Functions
 Secret Manager
   ├── EDGAR_USER_AGENT      → env var en la función
   ├── ANTHROPIC_API_KEY     → env var en la función
-  └── SLACK_WEBHOOK_URL     → env var en la función
+  ├── TELEGRAM_BOT_TOKEN    → env var en la función
+  └── TELEGRAM_CHAT_ID      → env var en la función
 
 Firestore (datadog-sandbox)
   └── collection: insider_agent_state

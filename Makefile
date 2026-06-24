@@ -65,10 +65,14 @@ gcp-create-secrets:
 	@read -p "Value: " v && printf "%s" "$$v" | \
 		gcloud secrets create ANTHROPIC_API_KEY --data-file=- --project=$(PROJECT) || \
 		printf "%s" "$$v" | gcloud secrets versions add ANTHROPIC_API_KEY --data-file=- --project=$(PROJECT)
-	@echo "--- SLACK_WEBHOOK_URL ---"
+	@echo "--- TELEGRAM_BOT_TOKEN ---"
 	@read -p "Value: " v && printf "%s" "$$v" | \
-		gcloud secrets create SLACK_WEBHOOK_URL --data-file=- --project=$(PROJECT) || \
-		printf "%s" "$$v" | gcloud secrets versions add SLACK_WEBHOOK_URL --data-file=- --project=$(PROJECT)
+		gcloud secrets create TELEGRAM_BOT_TOKEN --data-file=- --project=$(PROJECT) || \
+		printf "%s" "$$v" | gcloud secrets versions add TELEGRAM_BOT_TOKEN --data-file=- --project=$(PROJECT)
+	@echo "--- TELEGRAM_CHAT_ID ---"
+	@read -p "Value: " v && printf "%s" "$$v" | \
+		gcloud secrets create TELEGRAM_CHAT_ID --data-file=- --project=$(PROJECT) || \
+		printf "%s" "$$v" | gcloud secrets versions add TELEGRAM_CHAT_ID --data-file=- --project=$(PROJECT)
 
 .PHONY: deploy
 deploy:
@@ -81,7 +85,7 @@ deploy:
 		--trigger-http \
 		--no-allow-unauthenticated \
 		--service-account=$(SA) \
-		--set-secrets="EDGAR_USER_AGENT=EDGAR_USER_AGENT:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,SLACK_WEBHOOK_URL=SLACK_WEBHOOK_URL:latest" \
+		--set-secrets="EDGAR_USER_AGENT=EDGAR_USER_AGENT:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest" \
 		--set-env-vars="STATE_BACKEND=firestore,GCP_PROJECT=$(PROJECT)" \
 		--memory=256Mi \
 		--timeout=300s \
