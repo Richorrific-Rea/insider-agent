@@ -44,10 +44,17 @@ edgar_client.py  ──→  form4_parser.py  ──→  signals.py
 ## Instalación rápida
 
 ```bash
+# Instala dependencias y lanza el wizard de configuración
+make setup
+```
+
+El wizard te guía por cada variable paso a paso: EDGAR User-Agent, Anthropic API key, Telegram bot (con auto-detección del chat ID) y filtros. Si prefieres configurar a mano:
+
+```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edita .env con tu EDGAR_USER_AGENT (obligatorio)
+# Edita .env con tu editor
 ```
 
 ## Ejecución local

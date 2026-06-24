@@ -11,6 +11,10 @@ TZ          ?= America/New_York
 
 # ── Local dev ─────────────────────────────────────────────────────────────────
 
+.PHONY: setup
+setup:
+	python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python setup.py
+
 .PHONY: install
 install:
 	python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
