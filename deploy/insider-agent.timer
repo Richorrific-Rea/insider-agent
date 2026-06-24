@@ -1,0 +1,16 @@
+[Unit]
+Description=Run insider-agent every 15 min on market hours (Mon-Fri 09:00-16:00 ET)
+Requires=insider-agent.service
+
+[Timer]
+# Fires at :00, :15, :30, :45 during market hours Mon-Fri
+# Adjust OnCalendar timezone to match your server's local time
+# If your server is in UTC, use 13:00-20:00 (ET = UTC-4 in summer, UTC-5 in winter)
+OnCalendar=Mon-Fri *-*-* 13,14,15,16,17,18,19:00,15,30,45:00
+# Catch up on missed runs (e.g. after reboot)
+Persistent=true
+# Randomize start by up to 30s to avoid thundering herd
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Insider Agent — SEC EDGAR Form 4 signal pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Change User/WorkingDirectory to match your setup
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/insider-agent
+EnvironmentFile=/home/YOUR_USER/insider-agent/.env
+ExecStart=/home/YOUR_USER/insider-agent/.venv/bin/python main.py --once
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=insider-agent
+
+# Restart on failure (for oneshot this means retry next timer trigger)
+TimeoutStartSec=300

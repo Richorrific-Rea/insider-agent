@@ -115,3 +115,70 @@ logs:
 		--region=$(REGION) \
 		--project=$(PROJECT) \
 		--limit=50
+
+# ── Local VM deploy ───────────────────────────────────────────────────────────
+
+INSTALL_DIR ?= $(shell pwd)
+LOCAL_USER  ?= $(shell whoami)
+# Cron schedule: every 15 min Mon-Fri 09:00-16:00 (adjust hours for your TZ)
+LOCAL_CRON_SCHEDULE ?= */15 9-16 * * 1-5
+LOG_FILE    ?= $(INSTALL_DIR)/insider-agent.log
+
+.PHONY: install-cron
+install-cron:
+	@echo "Adding crontab entry for user $(LOCAL_USER)..."
+	(crontab -l 2>/dev/null | grep -v "insider-agent"; \
+	 echo "$(LOCAL_CRON_SCHEDULE) cd $(INSTALL_DIR) && $(INSTALL_DIR)/.venv/bin/python main.py --once >> $(LOG_FILE) 2>&1") | crontab -
+	@echo "Done. Run 'crontab -l' to verify."
+
+.PHONY: uninstall-cron
+uninstall-cron:
+	@echo "Removing insider-agent crontab entry..."
+	(crontab -l 2>/dev/null | grep -v "insider-agent") | crontab -
+	@echo "Done."
+
+.PHONY: install-systemd
+install-systemd:
+	@echo "Installing systemd service and timer..."
+	sed "s|YOUR_USER|$(LOCAL_USER)|g; s|/home/YOUR_USER/insider-agent|$(INSTALL_DIR)|g" \
+		deploy/insider-agent.service | sudo tee /etc/systemd/system/insider-agent.service > /dev/null
+	sed "s|YOUR_USER|$(LOCAL_USER)|g" \
+		deploy/insider-agent.timer | sudo tee /etc/systemd/system/insider-agent.timer > /dev/null
+	sudo systemctl daemon-reload
+	sudo systemctl enable insider-agent.timer
+	sudo systemctl start insider-agent.timer
+	@echo "Done. Run 'systemctl status insider-agent.timer' to verify."
+
+.PHONY: uninstall-systemd
+uninstall-systemd:
+	sudo systemctl stop insider-agent.timer || true
+	sudo systemctl disable insider-agent.timer || true
+	sudo rm -f /etc/systemd/system/insider-agent.{service,timer}
+	sudo systemctl daemon-reload
+	@echo "Systemd service and timer removed."
+
+.PHONY: run-systemd-now
+run-systemd-now:
+	sudo systemctl start insider-agent.service
+
+.PHONY: install-launchd
+install-launchd:
+	@echo "Installing launchd agent for user $(LOCAL_USER)..."
+	sed "s|YOUR_USER|$(LOCAL_USER)|g; s|/Users/YOUR_USER/insider-agent|$(INSTALL_DIR)|g" \
+		deploy/com.insider-agent.plist > ~/Library/LaunchAgents/com.insider-agent.plist
+	launchctl load ~/Library/LaunchAgents/com.insider-agent.plist
+	@echo "Done. Run 'launchctl list | grep insider-agent' to verify."
+
+.PHONY: uninstall-launchd
+uninstall-launchd:
+	launchctl unload ~/Library/LaunchAgents/com.insider-agent.plist || true
+	rm -f ~/Library/LaunchAgents/com.insider-agent.plist
+	@echo "launchd agent removed."
+
+.PHONY: run-launchd-now
+run-launchd-now:
+	launchctl start com.insider-agent
+
+.PHONY: logs-local
+logs-local:
+	tail -f $(LOG_FILE)
