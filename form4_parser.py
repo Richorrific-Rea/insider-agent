@@ -28,6 +28,28 @@ def _text(el: Optional[ET.Element], default: str = "") -> str:
     return (el.text or "").strip()
 
 
+def _val(el: Optional[ET.Element], default: str = "") -> str:
+    """Read text from el, preferring a <value> child if present (EDGAR pattern)."""
+    if el is None:
+        return default
+    value_child = None
+    for child in el:
+        if _strip_ns(child.tag) == "value":
+            value_child = child
+            break
+    if value_child is not None:
+        return (value_child.text or "").strip()
+    return (el.text or "").strip()
+
+
+def _float_val(el: Optional[ET.Element], default: float = 0.0) -> float:
+    t = _val(el)
+    try:
+        return float(t.replace(",", ""))
+    except (ValueError, AttributeError):
+        return default
+
+
 def _float_text(el: Optional[ET.Element], default: float = 0.0) -> float:
     t = _text(el)
     try:
@@ -166,17 +188,14 @@ def parse_form4(
         post_el = _find(txn_el, "postTransactionAmounts")
         coding_el = _find(txn_el, "transactionCoding")
 
+        # transactionCode is a direct-text field (no <value> wrapper)
         txn_code = _text(_find(coding_el, "transactionCode")) if coding_el is not None else ""
-        acq_disp = _text(_find(amounts_el, "transactionAcquiredDisposedCode")) if amounts_el is not None else ""
-        shares = _float_text(_find(amounts_el, "transactionShares")) if amounts_el is not None else 0.0
-        price = _float_text(_find(amounts_el, "transactionPricePerShare")) if amounts_el is not None else 0.0
-        shares_following = _float_text(_find(post_el, "sharesOwnedFollowingTransaction")) if post_el is not None else 0.0
-        txn_date = _text(_find(txn_el, "transactionDate"))
-        # transactionDate may be wrapped in a <value> child
-        if not txn_date:
-            date_el = _find(txn_el, "transactionDate")
-            if date_el is not None:
-                txn_date = _text(_find(date_el, "value"))
+        # All other transaction fields use the <value> child pattern
+        acq_disp = _val(_find(amounts_el, "transactionAcquiredDisposedCode")) if amounts_el is not None else ""
+        shares = _float_val(_find(amounts_el, "transactionShares")) if amounts_el is not None else 0.0
+        price = _float_val(_find(amounts_el, "transactionPricePerShare")) if amounts_el is not None else 0.0
+        shares_following = _float_val(_find(post_el, "sharesOwnedFollowingTransaction")) if post_el is not None else 0.0
+        txn_date = _val(_find(txn_el, "transactionDate"))
 
         value = shares * price
 

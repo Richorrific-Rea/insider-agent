@@ -58,6 +58,7 @@ def fetch_recent_form4_filings(
 
     ns = {"atom": "http://www.w3.org/2005/Atom"}
     results: List[Tuple[str, str]] = []
+    seen_accessions: set = set()
 
     for entry in root.findall("atom:entry", ns):
         # The filing index URL lives in <link href="...">
@@ -78,6 +79,9 @@ def fetch_recent_form4_filings(
                 accession = _accession_from_id(id_el.text)
         if not accession:
             continue
+        if accession in seen_accessions:
+            continue
+        seen_accessions.add(accession)
 
         # Convert index URL to directory URL
         dir_url = _index_to_dir_url(filing_index_url)
