@@ -73,13 +73,30 @@ Las opcionales clave:
 
 ---
 
-## Deploy en GCP Cloud Functions gen2
+## Deploy
 
-Ver [DEPLOY.md](DEPLOY.md) o la sección del Makefile para los comandos exactos.
+Hay dos opciones:
 
-Resumen:
+### Opción A — VM local / máquina propia
+
+Ver [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) para la guía completa. Resumen rápido:
+
+```bash
+# crontab (Linux / macOS)
+make install-cron
+
+# systemd timer (Linux)
+make install-systemd
+
+# launchd (macOS)
+make install-launchd
+```
+
+### Opción B — GCP Cloud Functions gen2
+
+Ver [DEPLOY.md](DEPLOY.md) para la guía completa. Resumen:
 1. `gcloud auth login`
-2. Crear secrets en Secret Manager
+2. `make gcp-enable-apis && make gcp-create-sa && make gcp-create-secrets`
 3. `make deploy`
 4. `make scheduler`
 
