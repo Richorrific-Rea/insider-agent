@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from config import Config
-    from signals import Signal
+    from signals import ConfluenceSignal, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -83,3 +83,65 @@ def enrich_signal(signal: "Signal", cfg: "Config") -> str:
     except Exception as exc:
         logger.warning("LLM enrichment failed (%s), using plain fallback.", exc)
         return _plain_fallback(signal)
+
+
+# ── Confluence enrichment ──────────────────────────────────────────────────────
+
+def _confluence_fallback(csig: "ConfluenceSignal") -> str:
+    primary = csig.primary_signal.transaction
+    pol_names = ", ".join(
+        {p.politician_name for p in csig.politician_trades}
+    ) if csig.politician_trades else ""
+    pol_note = f" Políticos comprando: {pol_names}." if pol_names else ""
+    return (
+        f"{csig.distinct_insiders} insider(s) de {primary.issuer_name} ({csig.ticker}) "
+        f"compraron un total de ${csig.total_insider_value:,.0f} "
+        f"en los últimos {csig.window_days} días.{pol_note}"
+    )
+
+
+def enrich_confluence(csig: "ConfluenceSignal", cfg: "Config") -> str:
+    """
+    Generates a brief for a confluence signal. Never raises.
+    """
+    if not cfg.anthropic_api_key:
+        return _confluence_fallback(csig)
+
+    try:
+        import anthropic
+
+        primary = csig.primary_signal.transaction
+        insider_lines = "\n".join(
+            f"  - {s.transaction.owner_name} ({', '.join(s.transaction.role_labels)}): "
+            f"${s.transaction.value:,.0f} el {s.transaction.transaction_date}"
+            for s in csig.insider_signals[:5]
+        )
+        pol_lines = ""
+        if csig.politician_trades:
+            pol_lines = "\nPolíticos comprando el mismo ticker:\n" + "\n".join(
+                f"  - {p.label}: {p.amount_range or 'monto no especificado'} el {p.transaction_date}"
+                for p in csig.politician_trades[:5]
+            )
+
+        user_msg = (
+            f"Empresa: {primary.issuer_name} (ticker: {csig.ticker}).\n"
+            f"Nivel de confluencia: {csig.confidence}.\n\n"
+            f"Insiders que compraron:\n{insider_lines}\n"
+            f"{pol_lines}\n\n"
+            "Resume en 4 frases factuales y neutrales en español. "
+            "Describe quiénes compraron, cuánto y la coincidencia. "
+            "PROHIBIDO: recomendaciones, predicciones de precio."
+        )
+
+        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+        response = client.messages.create(
+            model=cfg.anthropic_model,
+            max_tokens=350,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        return response.content[0].text.strip()
+
+    except Exception as exc:
+        logger.warning("LLM confluence enrichment failed (%s), using fallback.", exc)
+        return _confluence_fallback(csig)

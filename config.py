@@ -36,6 +36,12 @@ class Config:
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # ── Congressional confluence ───────────────────────────────────────────
+    use_congress_data: bool = True
+    congress_days_back: int = 30        # how far back to look for politician trades
+    confluence_window_days: int = 14    # insider + politician must trade within this window
+    confluence_min_politicians: int = 1 # min politicians buying same ticker
+
     # ── State / storage ────────────────────────────────────────────────────
     state_backend: str = "file"         # "file" | "firestore" | "gcs"
     state_file_path: str = "state.json"
@@ -92,6 +98,10 @@ def load_config() -> Config:
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        use_congress_data=_bool("USE_CONGRESS_DATA", True),
+        congress_days_back=_int("CONGRESS_DAYS_BACK", 30),
+        confluence_window_days=_int("CONFLUENCE_WINDOW_DAYS", 14),
+        confluence_min_politicians=_int("CONFLUENCE_MIN_POLITICIANS", 1),
         state_backend=os.getenv("STATE_BACKEND", "file"),
         state_file_path=os.getenv("STATE_FILE_PATH", "state.json"),
         gcp_project=os.getenv("GCP_PROJECT", ""),

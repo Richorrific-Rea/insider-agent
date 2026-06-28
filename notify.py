@@ -1,17 +1,11 @@
 """
 Telegram notifier.
 
-Sends enriched signals to a Telegram chat via the Bot API.
-Uses MarkdownV2 formatting.
-Supports dry_run mode (prints to stdout instead of sending).
+Two message types:
+  1. send_signal()      — single insider purchase (plain signal)
+  2. send_confluence()  — ticker bought by insiders + politicians (high-confidence)
 
-Setup:
-  1. Create a bot via @BotFather → get TELEGRAM_BOT_TOKEN
-  2. Send any message to the bot (or add it to a group/channel)
-  3. Get your chat ID:
-     curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
-     Look for "chat":{"id": ...} in the response
-  4. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env
+Uses MarkdownV2 formatting. Supports dry_run mode.
 """
 from __future__ import annotations
 
@@ -20,22 +14,19 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from signals import Signal
+    from signals import ConfluenceSignal, Signal
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
-EDGAR_BASE = "https://www.sec.gov/Archives/edgar/data/"
-DISCLAIMER = "_Señal informativa de Form 4 \\(SEC EDGAR\\), no recomendación de inversión\\._"
+DISCLAIMER = "_Idea para investigar basada en datos públicos de SEC EDGAR y divulgaciones del Congreso\\. No es recomendación de inversión\\._"
 
-# Characters that must be escaped in MarkdownV2
 _MDV2_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 
 
 def _esc(text: str) -> str:
-    """Escape a plain string for Telegram MarkdownV2."""
     return _MDV2_SPECIAL.sub(r"\\\1", str(text))
 
 
@@ -47,22 +38,12 @@ def _fmt_shares(shares: float) -> str:
     return _esc(f"{shares:,.0f}")
 
 
-def _filing_link(signal: "Signal") -> str:
+# ── Single insider signal ──────────────────────────────────────────────────────
+
+def _build_signal_message(signal: "Signal", brief: str) -> str:
     txn = signal.transaction
-    url = txn.filing_url or f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&CIK={txn.ticker}"
-    label = _esc("Ver filing en SEC EDGAR")
-    return f"[{label}]({url})"
-
-
-def _build_message(signal: "Signal", brief: str) -> str:
-    txn = signal.transaction
-    cluster_line = (
-        f"\n*Cluster:* {_esc(str(signal.cluster_size))} insiders distintos en {_esc('7')} días"
-        if signal.is_cluster
-        else ""
-    )
-
     cluster_tag = "  \\[CLUSTER\\]" if signal.is_cluster else ""
+
     lines = [
         f"*{_esc(txn.ticker)}* — Compra Insider{cluster_tag}",
         "",
@@ -71,18 +52,18 @@ def _build_message(signal: "Signal", brief: str) -> str:
         f"*Fecha:* {_esc(txn.transaction_date)}",
         f"*Tenencia post:* {_fmt_shares(txn.shares_owned_following)} acc",
     ]
-    if cluster_line:
-        lines.append(cluster_line)
+    if signal.is_cluster:
+        lines.append(f"*Cluster:* {_esc(str(signal.cluster_size))} insiders distintos en 7 días")
 
+    filing_url = txn.filing_url or f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&CIK={txn.ticker}"
     lines += [
         "",
         _esc(brief),
         "",
-        _filing_link(signal),
+        f"[{_esc('Ver filing en EDGAR')}]({filing_url})",
         "",
         DISCLAIMER,
     ]
-
     return "\n".join(lines)
 
 
@@ -93,22 +74,118 @@ def send_signal(
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    """Send a single signal to Telegram, or print it in dry_run mode."""
-    message = _build_message(signal, brief)
+    message = _build_signal_message(signal, brief)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"Signal {signal.transaction.ticker}")
 
+
+# ── Confluence signal ──────────────────────────────────────────────────────────
+
+def _confidence_header(confidence: str) -> str:
+    mapping = {
+        "MUY ALTA": "CONFLUENCIA — PROBABILIDAD MUY ALTA",
+        "ALTA":     "CONFLUENCIA — PROBABILIDAD ALTA",
+        "MEDIA":    "CONFLUENCIA — CLUSTER DE INSIDERS",
+    }
+    return mapping.get(confidence, f"CONFLUENCIA — {confidence}")
+
+
+def _build_confluence_message(csig: "ConfluenceSignal", brief: str) -> str:
+    header = _confidence_header(csig.confidence)
+
+    lines = [
+        f"*{_esc(csig.ticker)}* — {_esc(header)}",
+        "",
+    ]
+
+    # Insiders section
+    lines.append(f"*Insiders \\({_esc(str(csig.distinct_insiders))}\\):*")
+    for sig in csig.insider_signals[:5]:   # cap at 5 to avoid huge messages
+        txn = sig.transaction
+        roles = ", ".join(txn.role_labels)
+        lines.append(
+            f"  • {_esc(txn.owner_name)} \\({_esc(roles)}\\) "
+            f"compró {_fmt_usd(txn.value)} el {_esc(txn.transaction_date)}"
+        )
+    if len(csig.insider_signals) > 5:
+        lines.append(f"  \\.\\.\\. y {_esc(str(len(csig.insider_signals) - 5))} más")
+
+    lines.append("")
+
+    # Politicians section
+    if csig.politician_trades:
+        lines.append(f"*Políticos \\({_esc(str(csig.distinct_politicians))}\\):*")
+        seen_pols: set = set()
+        for pt in csig.politician_trades[:5]:
+            if pt.politician_name in seen_pols:
+                continue
+            seen_pols.add(pt.politician_name)
+            amount = f" ~ {_esc(pt.amount_range)}" if pt.amount_range else ""
+            date_str = f" el {_esc(pt.transaction_date)}" if pt.transaction_date else ""
+            lines.append(
+                f"  • {_esc(pt.label)} compró{amount}{date_str}"
+            )
+        if csig.distinct_politicians > 5:
+            lines.append(f"  \\.\\.\\. y {_esc(str(csig.distinct_politicians - 5))} más")
+        lines.append("")
+
+    # Summary line
+    total_buyers = csig.distinct_insiders + csig.distinct_politicians
+    lines.append(
+        f"*{_esc(str(total_buyers))} compradores en ventana de "
+        f"{_esc(str(csig.window_days))} días*"
+    )
+    lines.append("")
+
+    # Brief from LLM
+    lines.append(_esc(brief))
+    lines.append("")
+
+    # Links
+    primary = csig.primary_signal.transaction
+    edgar_url = primary.filing_url or (
+        f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&CIK={csig.ticker}"
+    )
+    links = [f"[{_esc('EDGAR')}]({edgar_url})"]
+    if csig.politician_trades and csig.politician_trades[0].filing_url:
+        links.append(f"[{_esc('Divulgación Congreso')}]({csig.politician_trades[0].filing_url})")
+    lines.append("  ".join(links))
+    lines.append("")
+    lines.append(DISCLAIMER)
+
+    return "\n".join(lines)
+
+
+def send_confluence(
+    csig: "ConfluenceSignal",
+    brief: str,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    message = _build_confluence_message(csig, brief)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"Confluence {csig.ticker} [{csig.confidence}]")
+
+
+# ── Transport ──────────────────────────────────────────────────────────────────
+
+def _send(
+    message: str,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool,
+    label: str = "",
+) -> None:
     if dry_run:
         print("\n" + "=" * 60)
-        print(f"[DRY RUN] Telegram message for {signal.transaction.ticker}")
+        print(f"[DRY RUN] {label}")
         print(message)
         print("=" * 60)
         return
 
     if not bot_token or not chat_id:
-        logger.warning(
-            "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set; "
-            "skipping notification for %s.",
-            signal.transaction.ticker,
-        )
+        logger.warning("TELEGRAM credentials not set; skipping %s.", label)
         return
 
     url = TELEGRAM_API.format(token=bot_token)
@@ -118,13 +195,8 @@ def send_signal(
         "parse_mode": "MarkdownV2",
         "disable_web_page_preview": True,
     }
-
     try:
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
     except Exception as exc:
-        logger.error(
-            "Telegram notification failed for %s: %s",
-            signal.transaction.ticker,
-            exc,
-        )
+        logger.error("Telegram send failed for %s: %s", label, exc)
