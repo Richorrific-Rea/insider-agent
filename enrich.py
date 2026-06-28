@@ -94,40 +94,43 @@ _PROMPTS = {
 
 import re as _re
 
-def _clean_llm_output(text: str) -> str:
+def _clean_llm_output(text: str, max_chars: int = 480) -> str:
     """
-    Post-process LLM output to remove common Gemini artifacts:
-    - Markdown (asterisks, bold, headers)
-    - English meta-commentary lines
-    - Self-corrections ("Note:", "This is incorrect", etc.)
-    - Leading/trailing quotes
+    Post-process LLM output:
+    1. Strip Gemini artifacts (labels, markdown, meta-commentary)
+    2. Hard-truncate at the last COMPLETE sentence before max_chars
     """
-    # Remove markdown bold/italic
-    text = _re.sub(r'\*+([^*]+)\*+', r'\1', text)
-    # Remove markdown headers
+    # Strip Gemini language labels like "(Spanish):*", "(Español):", etc.
+    text = _re.sub(r'^\s*\((?:Spanish|Español|ES)\)\s*:?\*?\s*', '', text, flags=_re.IGNORECASE)
+    # Remove markdown bold/italic  (*text* or **text**)
+    text = _re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    # Remove markdown headers and bullet points
     text = _re.sub(r'^#+\s+', '', text, flags=_re.MULTILINE)
-    # Remove bullet points
     text = _re.sub(r'^\s*[-•*]\s+', '', text, flags=_re.MULTILINE)
-    # Remove numbered lists
     text = _re.sub(r'^\s*\d+\.\s+', '', text, flags=_re.MULTILINE)
-    # Remove lines that are clearly English meta-commentary
-    english_patterns = [
-        r'(?i)^\s*(note|this|here|example|incorrect|correction|actually|wait|sorry)',
+    # Remove lines with English meta-commentary
+    bad_patterns = [
+        r'(?i)^\s*(note:|this is|here is|example:|incorrect|correction|actually,|wait,|sorry)',
         r'(?i)grammatically',
         r'(?i)what about',
         r'(?i)should be',
+        r'(?i)^\s*\(spanish\)',
+        r'(?i)^\s*\(english\)',
     ]
-    lines = text.split('\n')
-    clean_lines = []
-    for line in lines:
-        if any(_re.search(p, line) for p in english_patterns):
-            continue
-        clean_lines.append(line)
-    text = '\n'.join(clean_lines)
+    lines = [l for l in text.split('\n')
+             if not any(_re.search(p, l) for p in bad_patterns)]
+    text = ' '.join(l.strip() for l in lines if l.strip())
     # Remove surrounding quotes
     text = text.strip().strip('"').strip("'").strip()
-    # Collapse multiple spaces/newlines
-    text = _re.sub(r'\n{3,}', '\n\n', text)
+    # ── Hard truncate at last complete sentence ────────────────────────────
+    if len(text) > max_chars:
+        # Find the last sentence-ending punctuation before max_chars
+        chunk = text[:max_chars]
+        last_end = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
+        if last_end > max_chars // 2:   # only truncate if we keep >half the text
+            text = chunk[:last_end + 1]
+        else:
+            text = chunk.rstrip(' ,;:') + '.'
     return text.strip()
 
 
@@ -209,7 +212,7 @@ def _call_llm(system: str, user: str, cfg: "Config", max_tokens: int = 600) -> s
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return _clean_llm_output(resp.content[0].text)
+        return resp.content[0].text.strip()  # cleaned by caller
 
     # ── OpenAI-compatible (openai, groq, gemini, ollama, custom) ──────────
     import openai as _oai
@@ -238,7 +241,7 @@ def _call_llm(system: str, user: str, cfg: "Config", max_tokens: int = 600) -> s
             {"role": "user",   "content": user},
         ],
     )
-    return _clean_llm_output(resp.choices[0].message.content)
+    return resp.choices[0].message.content.strip()  # cleaned by caller
 
 
 # ── TierScore enrichment (main path) ──────────────────────────────────────────
@@ -249,11 +252,11 @@ def enrich_tier_score(ts: "TierScore", cfg: "Config") -> str:
         return _fallback_tier(ts)
 
     try:
-        system   = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
-        user_msg = _build_tier_user_msg(ts)
-        # MUY ALTA uses fewer tokens — 2 sentences max, less room to ramble
-        tokens = 400 if ts.tier == "MUY ALTA" else 600
-        return _call_llm(system, user_msg, cfg, max_tokens=tokens)
+        system    = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
+        user_msg  = _build_tier_user_msg(ts)
+        max_chars = 300 if ts.tier == "MUY ALTA" else 400
+        raw       = _call_llm(system, user_msg, cfg, max_tokens=1500)
+        return _clean_llm_output(raw, max_chars=max_chars)
 
     except Exception as exc:
         logger.warning("LLM enrichment failed (%s), using fallback.", exc)
