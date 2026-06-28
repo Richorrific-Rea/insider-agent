@@ -89,9 +89,20 @@ def _build_tier_message(ts: "TierScore", brief: str) -> str:
     bar = _SCORE_BAR.get(ts.tier, "▓░░░░")
     score_line = f"{bar} *{_e(ts.tier)}* \\| Score: *{_e(str(int(ts.total_score)))}* pts"
 
+    # Price confirmation banner (shown right in the header when present)
+    price_banner = ""
+    if ts.has_price_confirmation:
+        ps = ts.price_snapshot
+        price_banner = (
+            f"\n*precio ahora mismo:* \\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy "
+            f"\\| Vol {_e(f'{ps.volume_ratio:.1f}')}x \\| "
+            f"${_e(f'{ps.current_price:.2f}')}"
+        )
+
     lines = [
         f"*{_e(ts.ticker)}* — {_e(subtitle)}",
         score_line,
+        price_banner,
         "",
     ]
 
@@ -266,6 +277,62 @@ def _build_exit_message(exit_score, position, brief: str) -> str:
     lines.append(f"\n{_e(brief)}")
     lines.append(f"\n{_e(_DISCLAIMER_RAW)}")
     return "\n".join(lines)
+
+
+# ── Price-only alert (portfolio position, no new signal) ─────────────────────
+
+def send_price_only_alert(
+    price_snapshot,      # PriceSnapshot
+    position,            # portfolio.Position or None
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    """
+    Standalone price spike alert for a portfolio position that has no
+    new scoring signal this cycle.
+    """
+    ps = price_snapshot
+    strength = ps.spike_strength
+
+    strength_labels = {
+        "EXTREMO":    "MOVIMIENTO EXTREMO",
+        "MUY_FUERTE": "Subida muy fuerte",
+        "FUERTE":     "Subida fuerte",
+    }
+    label = strength_labels.get(strength, "Movimiento de precio")
+
+    lines = [
+        f"*{_e(ps.ticker)}* — {_e(label)}",
+        f"*\\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy* \\| "
+        f"Vol: *{_e(f'{ps.volume_ratio:.1f}')}x* promedio \\| "
+        f"${_e(f'{ps.current_price:.2f}')}",
+        "",
+    ]
+
+    if position:
+        unrealized_pct = ((ps.current_price - position.buy_price) / position.buy_price) * 100
+        unrealized_usd = (ps.current_price - position.buy_price) * position.shares
+        gain_str = f"\\+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
+        lines += [
+            f"*Tu posición:* {_shares(position.shares)} acc @ {_usd(position.buy_price)}",
+            f"*Ganancia no realizada:* {_usd(abs(unrealized_usd))} \\({gain_str}\\)",
+        ]
+        if position.notes:
+            lines.append(f"*Nota original:* {_e(position.notes)}")
+        lines.append("")
+
+    lines += [
+        f"*Apertura:* ${_e(f'{ps.open_price:.2f}')} \\| "
+        f"*Máx hoy:* ${_e(f'{ps.day_high:.2f}')} \\| "
+        f"*Mín hoy:* ${_e(f'{ps.day_low:.2f}')}",
+        "",
+        _e(_DISCLAIMER_RAW),
+    ]
+
+    message = "\n".join(lines)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"PriceSpike {ps.ticker} +{ps.pct_change_vs_close:.1f}%")
 
 
 # ── Legacy: single signal (for backward compat) ───────────────────────────────

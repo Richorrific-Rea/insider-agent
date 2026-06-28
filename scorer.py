@@ -27,6 +27,7 @@ W_PASSIVE_13G   = 15   # passive large holder ≥5%
 W_INST_13F      = 10   # per new institutional position, capped at 25
 W_SHORT_DECLINE = 15   # short interest falling
 W_OPT_UNUSUAL   = 25   # unusual call options
+W_PRICE_CONFIRM = 20   # price spike confirming the signal (thesis playing out)
 
 # Convergence bonuses (# of independent signal *types* firing)
 CONVERGENCE_BONUS = {2: 10, 3: 25, 4: 40, 5: 55}
@@ -82,6 +83,13 @@ def _magnitude_options(volume_oi_ratio: float) -> float:
     return 1.0
 
 
+def _magnitude_price_spike(pct_change: float, vol_ratio: float) -> float:
+    """Bigger move + more volume = stronger confirmation."""
+    price_mult = 2.0 if pct_change >= 15 else (1.6 if pct_change >= 8 else 1.2)
+    vol_mult   = 1.3 if vol_ratio >= 3.0  else (1.1 if vol_ratio >= 2.0  else 1.0)
+    return price_mult * vol_mult
+
+
 # ── Score components ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -114,6 +122,11 @@ class TierScore:
     institutional_positions: list = field(default_factory=list)
     short_interest: object = None
     unusual_options: list = field(default_factory=list)
+    price_snapshot: object = None   # PriceSnapshot if spike detected
+
+    @property
+    def has_price_confirmation(self) -> bool:
+        return self.price_snapshot is not None and self.price_snapshot.is_spiking
 
     @property
     def score_breakdown(self) -> str:
@@ -145,6 +158,7 @@ def score_ticker(
     institutional_positions: list,
     short_interest,
     unusual_options: list,
+    price_snapshot=None,
 ) -> TierScore:
     """
     Compute a TierScore for a single ticker from all available signal types.
@@ -270,6 +284,26 @@ def score_ticker(
             detail=f"Vol/OI: {best.volume_oi_ratio:.1f}x | strike {best.strike} exp {best.expiration}",
         ))
 
+    # ── Price spike confirmation ───────────────────────────────────────────
+    # Only counts when there are OTHER signals already — price alone doesn't score
+    if price_snapshot and price_snapshot.is_spiking and active_sources:
+        active_sources.append("precio")
+        mag = _magnitude_price_spike(
+            price_snapshot.pct_change_vs_close,
+            price_snapshot.volume_ratio,
+        )
+        pts = W_PRICE_CONFIRM * mag
+        total += pts
+        components.append(ScoreComponent(
+            source="Precio confirmando",
+            raw_weight=W_PRICE_CONFIRM, magnitude_mult=mag, recency_mult=1.0,
+            points=pts,
+            detail=(
+                f"+{price_snapshot.pct_change_vs_close:.1f}% hoy | "
+                f"Vol {price_snapshot.volume_ratio:.1f}x promedio"
+            ),
+        ))
+
     # ── Bonuses ────────────────────────────────────────────────────────────
     n_types = len(active_sources)
     conv_bonus = 0.0
@@ -295,4 +329,5 @@ def score_ticker(
         institutional_positions=institutional_positions,
         short_interest=short_interest,
         unusual_options=unusual_options,
+        price_snapshot=price_snapshot,
     )

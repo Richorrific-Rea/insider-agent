@@ -23,10 +23,11 @@ from congress_client import fetch_all_politician_trades
 from congress_parser import PoliticianTrade, parse_politician_trades
 from edgar_client import fetch_ownership_xml, fetch_recent_form4_filings
 from enrich import enrich_exit, enrich_signal, enrich_tier_score
+from price_client import PriceSnapshot, fetch_prices
 from exit_signals import ExitTierScore, detect_insider_sells, score_exit
 from finra_client import fetch_short_interest_batch
 from form4_parser import Transaction, parse_form4
-from notify import send_exit_alert, send_signal, send_tier_score
+from notify import send_exit_alert, send_price_only_alert, send_signal, send_tier_score
 from options_client import fetch_unusual_options_batch
 from portfolio import PortfolioStore
 from scorer import TierScore, score_ticker
@@ -122,7 +123,7 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
     short_data = {}
     options_data = {}
     if hot_tickers:
-        logger.info("Fetching short interest and options for %d tickers…", len(hot_tickers))
+        logger.info("Fetching short interest, options and prices for %d tickers…", len(hot_tickers))
         try:
             short_data = fetch_short_interest_batch(list(hot_tickers))
         except Exception as exc:
@@ -131,6 +132,18 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
             options_data = fetch_unusual_options_batch(list(hot_tickers))
         except Exception as exc:
             logger.warning("Options fetch failed: %s", exc)
+
+    # Fetch prices for ALL hot tickers upfront
+    price_data: Dict[str, object] = {}
+    all_price_tickers = hot_tickers | {p.ticker for p in PortfolioStore(path=cfg.state_file_path).get_positions()}
+    if all_price_tickers:
+        try:
+            price_data = fetch_prices(list(all_price_tickers))
+            spiking = [t for t, ps in price_data.items() if ps and ps.is_spiking]
+            if spiking:
+                logger.info("Price spikes detected: %s", sorted(spiking))
+        except Exception as exc:
+            logger.warning("Price fetch failed: %s", exc)
 
     # ── 7. Score each ticker ───────────────────────────────────────────────
     # Group all signal types by ticker
@@ -165,6 +178,7 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
             institutional_positions=inst_by_ticker.get(ticker, []),
             short_interest=short_data.get(ticker),
             unusual_options=options_data.get(ticker, []),
+            price_snapshot=price_data.get(ticker),
         )
         scored.append(ts)
 
@@ -274,6 +288,22 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
                 logger.info(
                     "Exit score for %s: %.0f (%s) — below alert threshold",
                     ticker, exit_score.total_score, exit_score.tier,
+                )
+
+            # Price-only alert: portfolio position spiking but no strong exit signal
+            ps = price_data.get(ticker)
+            if ps and ps.is_spiking and not exit_score.should_alert and ticker not in hot_tickers:
+                send_price_only_alert(
+                    price_snapshot=ps,
+                    position=position,
+                    bot_token=cfg.telegram_bot_token,
+                    chat_id=cfg.telegram_chat_id,
+                    dry_run=dry_run,
+                )
+                notified += 1
+                logger.info(
+                    "Price spike alert: %s +%.1f%% vol=%.1fx",
+                    ticker, ps.pct_change_vs_close, ps.volume_ratio,
                 )
 
     # ── 10. Persist ────────────────────────────────────────────────────────

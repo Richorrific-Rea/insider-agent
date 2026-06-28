@@ -248,6 +248,14 @@ def _build_tier_user_msg(ts: "TierScore") -> str:
             f"exp {opt.expiration} | vol/OI: {opt.volume_oi_ratio:.1f}x"
         )
 
+    if ts.has_price_confirmation:
+        ps = ts.price_snapshot
+        lines.append(
+            f"PRECIO CONFIRMANDO: +{ps.pct_change_vs_close:.1f}% hoy | "
+            f"volumen {ps.volume_ratio:.1f}x el promedio | "
+            f"LA TESIS SE ESTÁ CUMPLIENDO EN TIEMPO REAL"
+        )
+
     lines.append("")
     lines.append("Escribe el análisis según tu personalidad y el nivel de señal.")
     return "\n".join(lines)

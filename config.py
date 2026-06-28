@@ -43,6 +43,10 @@ class Config:
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # ── Price spike detection ──────────────────────────────────────────────
+    price_spike_pct: float = 5.0        # min % change from prev close to flag
+    price_volume_mult: float = 1.5      # min volume ratio vs 10-day avg
+
     # ── Congressional confluence ───────────────────────────────────────────
     use_congress_data: bool = True
     congress_days_back: int = 30        # how far back to look for politician trades
@@ -109,6 +113,8 @@ def load_config() -> Config:
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        price_spike_pct=_float("PRICE_SPIKE_PCT", 5.0),
+        price_volume_mult=_float("PRICE_VOLUME_MULT", 1.5),
         use_congress_data=_bool("USE_CONGRESS_DATA", True),
         congress_days_back=_int("CONGRESS_DAYS_BACK", 30),
         confluence_window_days=_int("CONFLUENCE_WINDOW_DAYS", 14),
