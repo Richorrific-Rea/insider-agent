@@ -254,7 +254,8 @@ def enrich_tier_score(ts: "TierScore", cfg: "Config") -> str:
     try:
         system    = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
         user_msg  = _build_tier_user_msg(ts)
-        max_chars = 300 if ts.tier == "MUY ALTA" else 400
+        # chars per tier — enough for personality without overflowing Telegram
+        max_chars = {"MUY ALTA": 550, "ALTA": 480, "MEDIA": 450, "BAJA": 380}.get(ts.tier, 450)
         raw       = _call_llm(system, user_msg, cfg, max_tokens=1500)
         return _clean_llm_output(raw, max_chars=max_chars)
 
