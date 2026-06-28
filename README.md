@@ -130,28 +130,215 @@ python main.py --remove IMVT
 
 ---
 
-## Quick start
+## Installation
 
-### Requirements
-- Python 3.11+
-- Git
-- A Telegram account (to receive alerts)
+### What you need before starting
+- **Python 3.11 or newer**
+- **Git**
+- **A Telegram account** (free) — this is where alerts are delivered
+- **An LLM API key** (optional but recommended) — Groq and Gemini are free
 
-### Install & configure
+---
 
+### macOS
+
+**Step 1 — Install Homebrew** (if you don't have it)
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**Step 2 — Install Python and Git**
+```bash
+brew install python@3.11 git
+```
+
+**Step 3 — Clone and set up**
 ```bash
 git clone https://github.com/Richorrific-Rea/insider-agent.git
 cd insider-agent
-
-# Install dependencies and run the interactive setup wizard
 make setup
 ```
 
-The wizard walks you through:
-1. **EDGAR User-Agent** — your name + email (required by SEC fair-access policy)
-2. **LLM API key** — Groq or Gemini are free; skip for plain-text fallback
-3. **Telegram bot** — creates bot via @BotFather, auto-detects your chat ID, sends a test message
-4. **Signal filters** — optional (defaults work well out of the box)
+`make setup` creates a virtual environment, installs all dependencies, and launches the interactive configuration wizard.
+
+**Step 4 — Test it**
+```bash
+python main.py --once --dry-run
+```
+
+You should see signals printed in your terminal. If you see `INFO pipeline: No new qualifying insider signals` it means no signals passed the filters in this specific batch — that's normal. Try lowering `MIN_TRADE_VALUE_USD=10000` in your `.env` to force output.
+
+**Step 5 — Schedule it** (runs automatically every 15 min)
+```bash
+make install-launchd    # recommended for Mac — runs in background, survives reboots
+# or
+make install-cron       # simpler alternative via crontab
+```
+
+---
+
+### Linux (Ubuntu / Debian / Raspberry Pi)
+
+**Step 1 — Install Python and dependencies**
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3-pip git make
+```
+
+> For other distros: use `dnf install python3.11 git make` (Fedora/RHEL) or `pacman -S python git make` (Arch).
+
+**Step 2 — Clone and set up**
+```bash
+git clone https://github.com/Richorrific-Rea/insider-agent.git
+cd insider-agent
+make setup
+```
+
+**Step 3 — Test it**
+```bash
+python3 main.py --once --dry-run
+```
+
+**Step 4 — Schedule it**
+
+Recommended for a persistent server (survives reboots, logs via journald):
+```bash
+make install-systemd
+```
+
+Or via crontab:
+```bash
+make install-cron
+```
+
+Check the timer is running:
+```bash
+systemctl status insider-agent.timer
+```
+
+View logs:
+```bash
+journalctl -u insider-agent.service -f
+```
+
+---
+
+### Windows
+
+There are two options. **WSL is strongly recommended** — it's simpler and everything works out of the box.
+
+#### Option A — WSL (Windows Subsystem for Linux) — recommended
+
+**Step 1 — Enable WSL** (run in PowerShell as Administrator)
+```powershell
+wsl --install
+```
+Restart your computer when prompted. This installs Ubuntu by default.
+
+**Step 2 — Open Ubuntu** from the Start menu and follow the Linux instructions above.
+
+That's it — WSL gives you a full Linux environment on Windows.
+
+#### Option B — Native Windows (PowerShell)
+
+**Step 1 — Install Python**
+
+Download Python 3.11+ from [python.org/downloads](https://www.python.org/downloads/). During installation, **check "Add Python to PATH"**.
+
+Verify:
+```powershell
+python --version   # should show 3.11 or newer
+```
+
+**Step 2 — Install Git**
+
+Download from [git-scm.com](https://git-scm.com/download/win) and install with default settings.
+
+**Step 3 — Clone the repo**
+```powershell
+git clone https://github.com/Richorrific-Rea/insider-agent.git
+cd insider-agent
+```
+
+**Step 4 — Create virtual environment and install dependencies**
+
+Windows does not have `make` by default, so run the underlying commands directly:
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Step 5 — Run the setup wizard**
+```powershell
+python setup.py
+```
+
+**Step 6 — Test it**
+```powershell
+python main.py --once --dry-run
+```
+
+**Step 7 — Schedule it on Windows**
+
+Open Task Scheduler and create a new task:
+- **Trigger:** Daily, repeat every 15 minutes from 9:00 AM to 4:00 PM
+- **Action:** Start a program
+  - Program: `C:\path\to\insider-agent\.venv\Scripts\python.exe`
+  - Arguments: `main.py --once`
+  - Start in: `C:\path\to\insider-agent`
+- **Conditions:** Run only when network is available
+
+Or use the quick PowerShell command to register the task:
+```powershell
+$action = New-ScheduledTaskAction `
+  -Execute "$PWD\.venv\Scripts\python.exe" `
+  -Argument "main.py --once" `
+  -WorkingDirectory $PWD
+
+$trigger = New-ScheduledTaskTrigger `
+  -RepetitionInterval (New-TimeSpan -Minutes 15) `
+  -RepetitionDuration (New-TimeSpan -Hours 7) `
+  -At "09:00AM" `
+  -Daily
+
+Register-ScheduledTask `
+  -TaskName "insider-agent" `
+  -Action $action `
+  -Trigger $trigger `
+  -RunLevel Highest
+```
+
+> **Note for Windows users:** The `make install-*` commands in the Makefile do not work natively on Windows. Use the PowerShell Task Scheduler approach above, or switch to WSL.
+
+---
+
+### Setup wizard walkthrough
+
+After running `make setup` (or `python setup.py` on Windows), the wizard guides you through:
+
+**1. EDGAR User-Agent** *(required)*
+The SEC requires you to identify yourself. Format: `Your Name your@email.com`. This is only used in the HTTP `User-Agent` header — it never gets committed to the repo.
+
+**2. LLM API key** *(optional — free options available)*
+
+| Provider | Where to get it | Cost |
+|---|---|---|
+| **Groq** | [console.groq.com](https://console.groq.com) | Free |
+| **Google Gemini** | [aistudio.google.com](https://aistudio.google.com) | Free |
+| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com) | Paid |
+| OpenAI | [platform.openai.com](https://platform.openai.com) | Paid |
+| Ollama (local) | [ollama.com](https://ollama.com) | Free (runs on your machine) |
+
+Skip this step to use plain-text signal summaries at no cost.
+
+**3. Telegram bot** *(optional — needed to receive alerts)*
+- Open Telegram → search `@BotFather` → send `/newbot` → follow the steps
+- The wizard validates your token, asks you to send a message to your bot, then **auto-detects your chat ID**
+- Sends a test message to confirm everything works
+
+**4. Signal filters** *(optional — defaults are good to start)*
+Minimum trade value, allowed insider roles, cluster window. Skip to use defaults.
 
 ### Test it
 
