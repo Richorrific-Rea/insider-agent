@@ -184,19 +184,92 @@ def section_edgar(existing: dict) -> dict:
     return {"EDGAR_USER_AGENT": ua}
 
 
-def section_anthropic(existing: dict) -> dict:
-    header("Anthropic API (opcional — enriquece señales con IA)")
-    info("Sin esta clave, el resumen será texto plano en vez de un análisis generado por IA.")
-    info("Obtén una en: https://console.anthropic.com → API Keys")
+def section_llm(existing: dict) -> dict:
+    header("LLM — Análisis de señales con IA (opcional)")
+    info("Sin API key los mensajes serán texto plano. Con IA obtienes el análisis")
+    info("del broker de los 80 con contexto de la empresa y teoría del movimiento.")
     print()
-    current = existing.get("ANTHROPIC_API_KEY", "")
-    if ask_yn("¿Quieres configurar la API key de Anthropic?", default=bool(current)):
-        key = ask("ANTHROPIC_API_KEY", default=current, secret=True)
-        model = ask("Modelo (enter para usar el default)", default=existing.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
-        ok("Anthropic configurado.")
-        return {"ANTHROPIC_API_KEY": key, "ANTHROPIC_MODEL": model}
-    info("Saltando. Se usará texto plano como fallback.")
-    return {}
+
+    if not ask_yn("¿Quieres configurar un proveedor de LLM?", default=True):
+        info("Saltando. Se usará texto plano como fallback.")
+        return {}
+
+    # Provider menu
+    providers = [
+        ("groq",      "Groq",       "Gratis · llama-3.1-70b · MUY rápido",     "console.groq.com"),
+        ("gemini",    "Gemini",     "Gratis · gemini-1.5-flash · Google",        "aistudio.google.com"),
+        ("deepseek",  "DeepSeek",   "Muy barato · deepseek-chat · razonamiento fuerte", "platform.deepseek.com"),
+        ("openai",    "OpenAI",     "GPT-4o-mini · $0.15/1M tokens",            "platform.openai.com"),
+        ("grok",      "Grok (xAI)", "grok-beta · Elon Musk · tono agresivo",    "console.x.ai"),
+        ("mistral",   "Mistral",    "Europeo · privacidad · mistral-large",      "console.mistral.ai"),
+        ("anthropic", "Anthropic",  "Claude · el original del proyecto",         "console.anthropic.com"),
+        ("ollama",    "Ollama",     "Local · sin internet · sin costo",          "ollama.com"),
+    ]
+
+    print()
+    for i, (code, name, desc, url) in enumerate(providers, 1):
+        badge = " ★" if code in ("groq", "gemini") else ""
+        print(f"  {i}) {_c(_BOLD, name)}{badge}  —  {desc}")
+        print(f"     {_c(_DIM, url)}")
+    print(f"  {len(providers)+1}) Omitir (usar texto plano)")
+    print()
+
+    current_provider = existing.get("LLM_PROVIDER", "")
+    default_idx = next((i+1 for i, (c,*_) in enumerate(providers) if c == current_provider), 1)
+
+    try:
+        raw = input(f"  {_c(_BOLD, 'Elige proveedor')} [{default_idx}]: ").strip()
+        choice = int(raw) if raw else default_idx
+    except (ValueError, KeyboardInterrupt):
+        choice = default_idx
+
+    if choice > len(providers):
+        info("Saltando. Se usará texto plano.")
+        return {}
+
+    code, name, desc, url = providers[choice - 1]
+
+    print()
+    info(f"Obtén tu API key en: {url}")
+
+    if code == "ollama":
+        info("Ollama corre localmente — instálalo desde ollama.com")
+        info("Luego: ollama pull llama3.2")
+        model = ask("Modelo Ollama", default=existing.get("LLM_MODEL", "llama3.2"))
+        base_url = ask("Base URL", default=existing.get("LLM_BASE_URL", "http://localhost:11434/v1"))
+        ok(f"Ollama configurado — modelo: {model}")
+        return {"LLM_PROVIDER": "ollama", "LLM_MODEL": model, "LLM_BASE_URL": base_url}
+
+    api_key = ask(f"API key de {name}", default=existing.get("LLM_API_KEY", ""), secret=True)
+
+    # Default models per provider
+    default_models = {
+        "groq":      "llama-3.1-70b-versatile",
+        "gemini":    "gemini-1.5-flash",
+        "deepseek":  "deepseek-chat",
+        "openai":    "gpt-4o-mini",
+        "grok":      "grok-beta",
+        "mistral":   "mistral-large-latest",
+        "anthropic": "claude-haiku-3-5",
+    }
+    default_model = default_models.get(code, "")
+    model = ask(f"Modelo (Enter para default: {default_model})",
+                default=existing.get("LLM_MODEL", default_model))
+
+    ok(f"{name} configurado — modelo: {model or default_model}")
+
+    result = {
+        "LLM_PROVIDER": code,
+        "LLM_API_KEY":  api_key,
+        "LLM_MODEL":    model or default_model,
+    }
+
+    # Keep legacy Anthropic key for backward compat
+    if code == "anthropic":
+        result["ANTHROPIC_API_KEY"] = api_key
+        result["ANTHROPIC_MODEL"]   = model or default_model
+
+    return result
 
 
 def section_telegram(existing: dict) -> dict:
@@ -335,7 +408,7 @@ def main() -> None:
     config: dict = {}
 
     config.update(section_edgar(existing))
-    config.update(section_anthropic(existing))
+    config.update(section_llm(existing))
     config.update(section_telegram(existing))
     config.update(section_filters(existing))
     config.update(section_state(existing))

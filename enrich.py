@@ -175,13 +175,19 @@ _DEFAULT_MODELS = {
     "openai":    "gpt-4o-mini",
     "groq":      "llama-3.1-70b-versatile",
     "gemini":    "gemini-1.5-flash",
+    "deepseek":  "deepseek-chat",
+    "grok":      "grok-beta",
+    "mistral":   "mistral-large-latest",
     "ollama":    "llama3.2",
     "custom":    "gpt-4o-mini",
 }
 
-_GROQ_BASE    = "https://api.groq.com/openai/v1"
-_GEMINI_BASE  = "https://generativelanguage.googleapis.com/v1beta/openai"
-_OLLAMA_BASE  = "http://localhost:11434/v1"
+_GROQ_BASE     = "https://api.groq.com/openai/v1"
+_GEMINI_BASE   = "https://generativelanguage.googleapis.com/v1beta/openai"
+_DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+_GROK_BASE     = "https://api.x.ai/v1"
+_MISTRAL_BASE  = "https://api.mistral.ai/v1"
+_OLLAMA_BASE   = "http://localhost:11434/v1"
 
 
 def _has_llm(cfg: "Config") -> bool:
@@ -216,10 +222,13 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
     import openai as _oai
 
     base_urls = {
-        "groq":   _GROQ_BASE,
-        "gemini": _GEMINI_BASE,
-        "ollama": cfg.llm_base_url or _OLLAMA_BASE,
-        "custom": cfg.llm_base_url,
+        "groq":     _GROQ_BASE,
+        "gemini":   _GEMINI_BASE,
+        "deepseek": _DEEPSEEK_BASE,
+        "grok":     _GROK_BASE,
+        "mistral":  _MISTRAL_BASE,
+        "ollama":   cfg.llm_base_url or _OLLAMA_BASE,
+        "custom":   cfg.llm_base_url,
     }
     base_url = base_urls.get(provider) or cfg.llm_base_url or None
 
