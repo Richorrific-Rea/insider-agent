@@ -172,6 +172,102 @@ def _build_tier_message(ts: "TierScore", brief: str) -> str:
     return "\n".join(lines)
 
 
+# ── Exit alert ────────────────────────────────────────────────────────────────
+
+_EXIT_HEADERS = {
+    "MEDIA":    "Actividad de ventas detectada en tu posición",
+    "ALTA":     "El dinero se esta moviendo — señal de salida",
+    "MUY ALTA": "ALERTA MAXIMA DE SALIDA — TODOS ESTAN VENDIENDO",
+}
+_EXIT_BARS = {
+    "BAJA":     "░░░░░",
+    "MEDIA":    "▓▓░░░",
+    "ALTA":     "▓▓▓▓░",
+    "MUY ALTA": "▓▓▓▓▓",
+}
+
+
+def send_exit_alert(
+    exit_score,          # ExitTierScore
+    position,            # portfolio.Position
+    brief: str,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    message = _build_exit_message(exit_score, position, brief)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"EXIT {exit_score.ticker} [{exit_score.tier}] score={exit_score.total_score:.0f}")
+
+
+def _build_exit_message(exit_score, position, brief: str) -> str:
+    subtitle = _EXIT_HEADERS.get(exit_score.tier, "Señal de salida")
+    bar = _EXIT_BARS.get(exit_score.tier, "▓░░░░")
+
+    lines = [
+        f"*{_e(exit_score.ticker)}* — {_e(subtitle)}",
+        f"{bar} *SALIDA {_e(exit_score.tier)}* \\| Score: *{_e(str(int(exit_score.total_score)))}* pts",
+        "",
+        f"*Tu posición:* {_shares(position.shares)} acc @ {_usd(position.buy_price)} "
+        f"el {_e(position.buy_date)}",
+    ]
+    if position.notes:
+        lines.append(f"*Nota:* {_e(position.notes)}")
+
+    lines.append("")
+
+    if exit_score.insider_sells:
+        distinct = len({t.owner_name for t in exit_score.insider_sells})
+        total_val = sum(t.value for t in exit_score.insider_sells)
+        lines.append(f"*Insiders vendiendo \\({_e(str(distinct))}\\):*")
+        for t in exit_score.insider_sells[:4]:
+            roles = ", ".join(t.role_labels)
+            lines.append(
+                f"  • {_e(t.owner_name)} \\({_e(roles)}\\) "
+                f"vendió {_usd(t.value)} el {_e(t.transaction_date)}"
+            )
+
+    if exit_score.politician_sells:
+        seen: set = set()
+        unique = [p for p in exit_score.politician_sells
+                  if p.politician_name not in seen and not seen.add(p.politician_name)]
+        lines.append(f"\n*Políticos vendiendo \\({_e(str(len(unique)))}\\):*")
+        for p in unique[:3]:
+            amt = f" ~ {_e(p.amount_range)}" if p.amount_range else ""
+            lines.append(f"  • {_e(p.label)}{amt}")
+
+    if exit_score.activist_reductions:
+        lines.append(f"\n*Activistas reduciendo:*")
+        for a in exit_score.activist_reductions[:2]:
+            lines.append(f"  • {_e(a.filer_name)} \\({_e(a.filing_type)}\\)")
+
+    if exit_score.short_interest:
+        si = exit_score.short_interest
+        rise = -si.decline_pct
+        if rise >= 10:
+            lines.append(
+                f"\n*Short Interest:* subió {_e(f'{rise:.0f}%')} "
+                f"\\(ahora {_e(f'{si.current_pct:.1f}%')} del float\\)"
+            )
+
+    if exit_score.unusual_puts:
+        opt = exit_score.unusual_puts[0]
+        lines.append(
+            f"\n*PUTs inusuales:* strike {_e(str(opt.strike))} "
+            f"exp {_e(opt.expiration)} \\| Vol/OI: *{_e(f'{opt.volume_oi_ratio:.1f}')}x*"
+        )
+
+    n_sources = len(exit_score.active_source_types)
+    lines.append(
+        f"\n*{_e(str(n_sources))} fuente{'s' if n_sources != 1 else ''} "
+        f"independiente{'s' if n_sources != 1 else ''}* señalando salida"
+    )
+
+    lines.append(f"\n{_e(brief)}")
+    lines.append(f"\n{_e(_DISCLAIMER_RAW)}")
+    return "\n".join(lines)
+
+
 # ── Legacy: single signal (for backward compat) ───────────────────────────────
 
 def send_signal(

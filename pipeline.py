@@ -22,11 +22,13 @@ from config import Config
 from congress_client import fetch_all_politician_trades
 from congress_parser import PoliticianTrade, parse_politician_trades
 from edgar_client import fetch_ownership_xml, fetch_recent_form4_filings
-from enrich import enrich_signal, enrich_tier_score
+from enrich import enrich_exit, enrich_signal, enrich_tier_score
+from exit_signals import ExitTierScore, detect_insider_sells, score_exit
 from finra_client import fetch_short_interest_batch
 from form4_parser import Transaction, parse_form4
-from notify import send_signal, send_tier_score
+from notify import send_exit_alert, send_signal, send_tier_score
 from options_client import fetch_unusual_options_batch
+from portfolio import PortfolioStore
 from scorer import TierScore, score_ticker
 from sec_extra_client import (
     ActivistFiling,
@@ -187,9 +189,94 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
             "+".join(ts.active_source_types),
         )
 
-    logger.info("Total signals sent: %d", notified)
+    logger.info("Total entry signals sent: %d", notified)
 
-    # ── 9. Persist ─────────────────────────────────────────────────────────
+    # ── 9. Portfolio exit surveillance ────────────────────────────────────
+    portfolio = PortfolioStore(path=cfg.state_file_path)
+    positions = portfolio.get_positions()
+    if positions:
+        logger.info("Checking exit signals for %d portfolio position(s)…", len(positions))
+        portfolio_tickers = {p.ticker for p in positions}
+
+        # Reuse already-fetched data where possible; fetch extra tickers if needed
+        extra_tickers = portfolio_tickers - hot_tickers
+        if extra_tickers:
+            try:
+                extra_si = fetch_short_interest_batch(list(extra_tickers))
+                short_data.update(extra_si)
+            except Exception:
+                pass
+            try:
+                extra_opts = fetch_unusual_options_batch(
+                    list(extra_tickers), calls_only=False
+                )
+                options_data.update(extra_opts)
+            except Exception:
+                pass
+
+        # Filter politician & activist data for portfolio tickers
+        pol_sells_by_ticker: Dict[str, list] = defaultdict(list)
+        for p in politician_trades:
+            if p.ticker in portfolio_tickers and not p.is_purchase:
+                pol_sells_by_ticker[p.ticker].append(p)
+
+        act_reduce_by_ticker: Dict[str, list] = defaultdict(list)
+        for a in activist_filings:
+            if a.ticker in portfolio_tickers:
+                act_reduce_by_ticker[a.ticker].append(a)
+
+        # All recent transactions for insider sell detection
+        all_recent_txns = new_transactions + cached_txns
+
+        for position in positions:
+            ticker = position.ticker
+            insider_sells = detect_insider_sells(all_recent_txns, ticker)
+            pol_sells     = pol_sells_by_ticker.get(ticker, [])
+            act_reduces   = act_reduce_by_ticker.get(ticker, [])
+            si            = short_data.get(ticker)
+
+            # Unusual PUTs (separate fetch, calls_only=False)
+            puts = [o for o in options_data.get(ticker, []) if o.option_type == "PUT"]
+
+            if not any([insider_sells, pol_sells, act_reduces, puts,
+                        (si and -si.decline_pct >= 10)]):
+                logger.debug("No exit signals for %s", ticker)
+                continue
+
+            exit_score = score_exit(
+                ticker=ticker,
+                issuer_name=position.notes or ticker,
+                insider_sells=insider_sells,
+                politician_sells=pol_sells,
+                activist_reductions=act_reduces,
+                institutional_reductions=[],
+                short_interest=si,
+                unusual_puts=puts,
+            )
+
+            if exit_score.should_alert:
+                brief = enrich_exit(exit_score, cfg)
+                send_exit_alert(
+                    exit_score=exit_score,
+                    position=position,
+                    brief=brief,
+                    bot_token=cfg.telegram_bot_token,
+                    chat_id=cfg.telegram_chat_id,
+                    dry_run=dry_run,
+                )
+                notified += 1
+                logger.info(
+                    "EXIT alert: %s tier=%s score=%.0f sources=%s",
+                    ticker, exit_score.tier, exit_score.total_score,
+                    "+".join(exit_score.active_source_types),
+                )
+            else:
+                logger.info(
+                    "Exit score for %s: %.0f (%s) — below alert threshold",
+                    ticker, exit_score.total_score, exit_score.tier,
+                )
+
+    # ── 10. Persist ────────────────────────────────────────────────────────
     _persist(store, new_accessions, all_qualifying)
     return notified
 

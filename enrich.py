@@ -282,3 +282,105 @@ def enrich_confluence(csig: "ConfluenceSignal", cfg: "Config") -> str:
     if not csig.insider_signals:
         return ""
     return enrich_signal(csig.primary_signal, cfg)
+
+
+# ── Exit signal enrichment ─────────────────────────────────────────────────────
+
+_PROMPT_EXIT_MEDIA = """\
+Eres un analista financiero prudente. Detectaste señales de venta en una acción \
+que el usuario tiene en su portafolio. Describe los hechos en español (3-4 frases): \
+quién está vendiendo, cuánto, qué patrón ves. Tono: calmado pero alerta. \
+PROHIBIDO recomendar vender o predecir precios."""
+
+_PROMPT_EXIT_ALTA = """\
+Eres un broker de Wall Street de los años 80. Cuando el dinero listo empieza a \
+salir de una posición, lo notas ANTES que todos. Hay señales de venta en una \
+acción del portafolio del usuario. Describe los HECHOS en español (4 frases) \
+con urgencia y estilo de época: "el dinero se está yendo", "los trajes están \
+saliendo", "algo cambió". PROHIBIDO decir que la acción va a bajar o recomendar vender."""
+
+_PROMPT_EXIT_MUY_ALTA = """\
+Eres un broker de Wall Street de los años 80 y TODAS las alarmas están encendidas. \
+El CEO, los directores, los políticos y los activistas están TODOS vendiendo la \
+misma acción que el usuario tiene en cartera. Describe los HECHOS en español \
+(4-5 frases) con energía de PÁNICO CONTROLADO: mayúsculas para énfasis, \
+"TODO EL MUNDO ESTÁ SALIENDO", "esto me recuerda al 87", "cuando los suits \
+venden así es hora de prestar MUCHA atención". \
+ABSOLUTAMENTE PROHIBIDO recomendar vender o predecir precios. Solo hechos con actitud."""
+
+_EXIT_PROMPTS = {
+    "BAJA":     _PROMPT_EXIT_MEDIA,
+    "MEDIA":    _PROMPT_EXIT_MEDIA,
+    "ALTA":     _PROMPT_EXIT_ALTA,
+    "MUY ALTA": _PROMPT_EXIT_MUY_ALTA,
+}
+
+
+def enrich_exit(exit_score: "ExitTierScore", cfg: "Config") -> str:
+    """Generate an exit brief. Never raises."""
+    if not _has_llm(cfg):
+        return _fallback_exit(exit_score)
+    try:
+        system   = _EXIT_PROMPTS.get(exit_score.tier, _PROMPT_EXIT_MEDIA)
+        user_msg = _build_exit_user_msg(exit_score)
+        return _call_llm(system, user_msg, cfg)
+    except Exception as exc:
+        logger.warning("LLM exit enrichment failed (%s).", exc)
+        return _fallback_exit(exit_score)
+
+
+def _fallback_exit(es: "ExitTierScore") -> str:
+    parts = []
+    if es.insider_sells:
+        distinct = len({t.owner_name for t in es.insider_sells})
+        total_val = sum(t.value for t in es.insider_sells)
+        parts.append(f"{distinct} insider(s) vendieron ${total_val:,.0f}")
+    if es.politician_sells:
+        n = len({p.politician_name for p in es.politician_sells})
+        parts.append(f"{n} político(s) vendieron")
+    if es.activist_reductions:
+        parts.append(f"{len(es.activist_reductions)} activista(s) redujeron posición")
+    if es.short_interest and -es.short_interest.decline_pct >= 10:
+        parts.append(f"short interest subió {-es.short_interest.decline_pct:.0f}%")
+    if es.unusual_puts:
+        parts.append("puts inusuales detectados")
+    summary = ", ".join(parts) if parts else "actividad de ventas detectada"
+    return f"{es.ticker}: {summary}. Score salida: {es.total_score:.0f} — {es.tier}."
+
+
+def _build_exit_user_msg(es: "ExitTierScore") -> str:
+    lines = [
+        f"Ticker: {es.ticker} ({es.issuer_name})",
+        f"Score de SALIDA: {es.total_score:.0f} pts — {es.tier}",
+        f"Fuentes: {', '.join(es.active_source_types)}",
+        "",
+    ]
+    if es.insider_sells:
+        lines.append("INSIDERS VENDIENDO:")
+        for t in es.insider_sells[:5]:
+            lines.append(
+                f"  - {t.owner_name} ({', '.join(t.role_labels)}): "
+                f"${t.value:,.0f} el {t.transaction_date}"
+            )
+    if es.politician_sells:
+        lines.append("POLÍTICOS VENDIENDO:")
+        seen: set = set()
+        for p in es.politician_sells[:5]:
+            if p.politician_name not in seen:
+                seen.add(p.politician_name)
+                lines.append(f"  - {p.label}: {p.amount_range or '?'} el {p.transaction_date}")
+    if es.activist_reductions:
+        lines.append("ACTIVISTAS REDUCIENDO:")
+        for a in es.activist_reductions[:3]:
+            lines.append(f"  - {a.filer_name} ({a.filing_type}) el {a.filing_date}")
+    if es.short_interest and -es.short_interest.decline_pct >= 10:
+        si = es.short_interest
+        lines.append(f"SHORT INTEREST: subió {-si.decline_pct:.0f}% (ahora {si.current_pct:.1f}%)")
+    if es.unusual_puts:
+        opt = es.unusual_puts[0]
+        lines.append(
+            f"PUTS INUSUALES: strike {opt.strike} exp {opt.expiration} | "
+            f"Vol/OI: {opt.volume_oi_ratio:.1f}x"
+        )
+    lines.append("\nDescribe los hechos según tu personalidad.")
+    return "\n".join(lines)
