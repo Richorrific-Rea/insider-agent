@@ -51,6 +51,10 @@ class Config:
     price_drop_pct: float = 5.0         # min % drop to trigger portfolio alert
     watchlist_drop_pct: float = 7.0     # min % drop for watchlist drop alert
 
+    # ── News triggers ─────────────────────────────────────────────────────
+    use_news_triggers: bool = True
+    news_ticker_ttl_days: int = 5       # days to keep news-triggered tickers in scan window
+
     # ── Congressional confluence ───────────────────────────────────────────
     use_congress_data: bool = True
     congress_days_back: int = 30        # how far back to look for politician trades
@@ -123,6 +127,8 @@ def load_config() -> Config:
         watchlist_spike_pct=_float("WATCHLIST_SPIKE_PCT", 7.0),
         price_drop_pct=_float("PRICE_DROP_PCT", 5.0),
         watchlist_drop_pct=_float("WATCHLIST_DROP_PCT", 7.0),
+        use_news_triggers=_bool("USE_NEWS_TRIGGERS", True),
+        news_ticker_ttl_days=_int("NEWS_TICKER_TTL_DAYS", 5),
         use_congress_data=_bool("USE_CONGRESS_DATA", True),
         congress_days_back=_int("CONGRESS_DAYS_BACK", 30),
         confluence_window_days=_int("CONFLUENCE_WINDOW_DAYS", 14),

@@ -48,6 +48,16 @@ class StateStore(ABC):
     def save(self) -> None:
         """Flush any in-memory state to backing store."""
 
+    def get_news_tickers(self) -> Dict[str, str]:
+        """Return {ticker: expiry_date_iso} for news-triggered tickers."""
+        return {}
+
+    def add_news_tickers(self, tickers: Dict[str, str], ttl_days: int = 5) -> None:
+        """Add tickers from news with expiry = today + ttl_days."""
+
+    def expire_news_tickers(self) -> None:
+        """Remove tickers whose TTL has passed."""
+
 
 # ── File implementation ───────────────────────────────────────────────────────
 
@@ -55,7 +65,11 @@ class StateStore(ABC):
 class FileStateStore(StateStore):
     def __init__(self, path: str = "state.json"):
         self._path = path
-        self._state: Dict = {"seen_accessions": [], "recent_transactions": []}
+        self._state: Dict = {
+            "seen_accessions": [],
+            "recent_transactions": [],
+            "news_tickers": {},      # {ticker: expiry_date_iso}
+        }
         self._load()
 
     def _load(self) -> None:
@@ -82,6 +96,27 @@ class FileStateStore(StateStore):
         for txn in transactions:
             existing[txn["accession_number"]] = txn
         self._state["recent_transactions"] = list(existing.values())
+
+    # ── News ticker cache ──────────────────────────────────────────────────
+
+    def get_news_tickers(self) -> Dict[str, str]:
+        return dict(self._state.get("news_tickers", {}))
+
+    def add_news_tickers(self, tickers: Dict[str, str], ttl_days: int = 5) -> None:
+        from datetime import date, timedelta
+        expiry = (date.today() + timedelta(days=ttl_days)).isoformat()
+        existing = self.get_news_tickers()
+        for ticker in tickers:
+            existing[ticker.upper()] = expiry
+        self._state["news_tickers"] = existing
+
+    def expire_news_tickers(self) -> None:
+        from datetime import date
+        today = date.today().isoformat()
+        current = self.get_news_tickers()
+        self._state["news_tickers"] = {
+            t: exp for t, exp in current.items() if exp >= today
+        }
 
     def save(self) -> None:
         tmp = self._path + ".tmp"
