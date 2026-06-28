@@ -308,6 +308,79 @@ def send_watchlist_alert(
           label=f"Watchlist {ps.ticker} +{ps.pct_change_vs_close:.1f}%")
 
 
+# ── Price drop alerts ─────────────────────────────────────────────────────────
+
+_DROP_LABELS = {
+    "EXTREMO": "Caída extrema",
+    "FUERTE":  "Caída fuerte",
+    "NOTABLE": "Caída notable",
+}
+
+
+def send_portfolio_drop_alert(
+    price_snapshot,
+    position,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    """Alert when a portfolio position is dropping significantly."""
+    ps = price_snapshot
+    label = _DROP_LABELS.get(ps.drop_strength, "Caída de precio")
+
+    unrealized_pct = ((ps.current_price - position.buy_price) / position.buy_price) * 100
+    unrealized_usd = (ps.current_price - position.buy_price) * position.shares
+
+    days_held = 0
+    if position.buy_date:
+        try:
+            days_held = (date.today() - date.fromisoformat(position.buy_date)).days
+        except Exception:
+            pass
+    held_str = "hoy" if days_held == 0 else ("ayer" if days_held == 1 else f"hace {days_held} días")
+
+    vol_note = f" · volumen {_e(f'{ps.volume_ratio:.1f}')}x" if ps.volume_ratio >= 2.0 else ""
+    sign = "\\+" if unrealized_pct >= 0 else ""
+
+    lines = [
+        f"*{_e(ps.ticker)}*  ·  {_e(label)}",
+        f"{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy · ${_e(f'{ps.current_price:.2f}')}{vol_note}",
+        "",
+        f"Tu posición: {_e(f'{position.shares:,.0f}')} acc · {_e(_fmt_money(position.buy_price))} c/u",
+        f"Compraste {held_str}",
+        f"P&L: {_e(_fmt_money(abs(unrealized_usd)))} \\({sign}{_e(f'{unrealized_pct:.1f}')}%\\)",
+        "",
+        _e(_DISCLAIMER_RAW),
+    ]
+
+    _send("\n".join(lines), bot_token, chat_id, dry_run,
+          label=f"PortfolioDrop {ps.ticker} {ps.pct_change_vs_close:.1f}%")
+
+
+def send_watchlist_drop_alert(
+    price_snapshot,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    """Alert when a watchlist ticker is dropping significantly."""
+    ps = price_snapshot
+    label = _DROP_LABELS.get(ps.drop_strength, "Caída de precio")
+    vol_note = f" · volumen {_e(f'{ps.volume_ratio:.1f}')}x" if ps.volume_ratio >= 2.0 else ""
+
+    lines = [
+        f"*{_e(ps.ticker)}*  ·  {_e(label)}",
+        f"{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy · ${_e(f'{ps.current_price:.2f}')}{vol_note}",
+        "",
+        f"En tu watchlist\\. Sin señal de insiders activa\\.",
+        "",
+        _e(_DISCLAIMER_RAW),
+    ]
+
+    _send("\n".join(lines), bot_token, chat_id, dry_run,
+          label=f"WatchlistDrop {ps.ticker} {ps.pct_change_vs_close:.1f}%")
+
+
 # ── Legacy: single signal (backward compat) ───────────────────────────────────
 
 def send_signal(

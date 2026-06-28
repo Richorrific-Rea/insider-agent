@@ -65,16 +65,29 @@ class PriceSnapshot:
         )
 
     def is_moving(self, threshold_pct: float = 7.0) -> bool:
-        """Watchlist check — only needs % change, no volume requirement."""
+        """Watchlist upward check — price only, no volume requirement."""
         return self.pct_change_vs_close >= threshold_pct
+
+    def is_dropping(self, threshold_pct: float = 5.0) -> bool:
+        """True if stock is falling significantly. Uses absolute value of drop."""
+        return self.pct_change_vs_close <= -threshold_pct
 
     @property
     def spike_strength(self) -> str:
-        """NOTABLE / FUERTE / EXTREMO based on magnitude."""
+        """NOTABLE / FUERTE / EXTREMO based on magnitude (upward)."""
         pct = self.pct_change_vs_close
         if pct >= 18: return "EXTREMO"
         if pct >= 12: return "FUERTE"
         if pct >= 7:  return "NOTABLE"
+        return "NORMAL"
+
+    @property
+    def drop_strength(self) -> str:
+        """NOTABLE / FUERTE / EXTREMO based on magnitude (downward)."""
+        pct = abs(self.pct_change_vs_close)
+        if pct >= 15: return "EXTREMO"
+        if pct >= 10: return "FUERTE"
+        if pct >= 5:  return "NOTABLE"
         return "NORMAL"
 
     @property

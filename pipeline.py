@@ -27,7 +27,9 @@ from price_client import PriceSnapshot, fetch_prices
 from exit_signals import ExitTierScore, detect_insider_sells, score_exit
 from finra_client import fetch_short_interest_batch
 from form4_parser import Transaction, parse_form4
-from notify import send_exit_alert, send_price_only_alert, send_signal, send_tier_score, send_watchlist_alert
+from notify import (send_exit_alert, send_price_only_alert, send_signal,
+                    send_tier_score, send_watchlist_alert,
+                    send_portfolio_drop_alert, send_watchlist_drop_alert)
 from options_client import fetch_unusual_options_batch
 from portfolio import PortfolioStore
 from scorer import TierScore, score_ticker
@@ -314,19 +316,33 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
                     ticker, ps.pct_change_vs_close, ps.volume_ratio,
                 )
 
+            # Drop alert for portfolio position
+            if ps and ps.is_dropping(cfg.price_drop_pct) and not exit_score.should_alert:
+                send_portfolio_drop_alert(
+                    price_snapshot=ps,
+                    position=position,
+                    bot_token=cfg.telegram_bot_token,
+                    chat_id=cfg.telegram_chat_id,
+                    dry_run=dry_run,
+                )
+                notified += 1
+                price_alerted_tickers.add(ticker)
+                logger.info(
+                    "Portfolio drop alert: %s %.1f%% vol=%.1fx",
+                    ticker, ps.pct_change_vs_close, ps.volume_ratio,
+                )
+
     # ── 10. Watchlist price scan ───────────────────────────────────────────
     watchlist = _pstore.get_watchlist()
     if watchlist:
         logger.info("Scanning %d watchlist ticker(s) for price moves…", len(watchlist))
         for ticker in watchlist:
             ps = price_data.get(ticker)
+            if ticker in hot_tickers or ticker in price_alerted_tickers:
+                logger.debug("Watchlist %s already covered this cycle", ticker)
+                continue
+
             if ps and ps.is_moving(cfg.watchlist_spike_pct):
-                # Skip if already covered by a signal message or portfolio alert
-                if ticker in hot_tickers or ticker in price_alerted_tickers:
-                    logger.debug(
-                        "Watchlist %s already covered by signal/portfolio message", ticker
-                    )
-                    continue
                 send_watchlist_alert(
                     price_snapshot=ps,
                     bot_token=cfg.telegram_bot_token,
@@ -334,10 +350,19 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
                     dry_run=dry_run,
                 )
                 notified += 1
-                logger.info(
-                    "Watchlist alert: %s +%.1f%% [%s]",
-                    ticker, ps.pct_change_vs_close, ps.spike_strength,
+                price_alerted_tickers.add(ticker)
+                logger.info("Watchlist spike: %s +%.1f%%", ticker, ps.pct_change_vs_close)
+
+            elif ps and ps.is_dropping(cfg.watchlist_drop_pct):
+                send_watchlist_drop_alert(
+                    price_snapshot=ps,
+                    bot_token=cfg.telegram_bot_token,
+                    chat_id=cfg.telegram_chat_id,
+                    dry_run=dry_run,
                 )
+                notified += 1
+                price_alerted_tickers.add(ticker)
+                logger.info("Watchlist drop: %s %.1f%%", ticker, ps.pct_change_vs_close)
 
     # ── 11. Persist ────────────────────────────────────────────────────────
     _persist(store, new_accessions, all_qualifying)

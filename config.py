@@ -44,9 +44,11 @@ class Config:
     telegram_chat_id: str = ""
 
     # ── Price spike detection ──────────────────────────────────────────────
-    price_spike_pct: float = 5.0        # min % for portfolio/signal confirmation
+    price_spike_pct: float = 5.0        # min % move up (portfolio/signal confirmation)
     price_volume_mult: float = 1.5      # kept for reference (no longer a gate)
-    watchlist_spike_pct: float = 7.0    # min % for standalone watchlist alerts
+    watchlist_spike_pct: float = 7.0    # min % move up for watchlist alerts
+    price_drop_pct: float = 5.0         # min % drop to trigger portfolio alert
+    watchlist_drop_pct: float = 7.0     # min % drop for watchlist drop alert
 
     # ── Congressional confluence ───────────────────────────────────────────
     use_congress_data: bool = True
@@ -117,6 +119,8 @@ def load_config() -> Config:
         price_spike_pct=_float("PRICE_SPIKE_PCT", 5.0),
         price_volume_mult=_float("PRICE_VOLUME_MULT", 1.5),
         watchlist_spike_pct=_float("WATCHLIST_SPIKE_PCT", 7.0),
+        price_drop_pct=_float("PRICE_DROP_PCT", 5.0),
+        watchlist_drop_pct=_float("WATCHLIST_DROP_PCT", 7.0),
         use_congress_data=_bool("USE_CONGRESS_DATA", True),
         congress_days_back=_int("CONGRESS_DAYS_BACK", 30),
         confluence_window_days=_int("CONFLUENCE_WINDOW_DAYS", 14),
