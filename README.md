@@ -1,8 +1,10 @@
 # insider-agent
 
-A scheduled pipeline that monitors **6 independent signal sources**, cross-references them into a confidence score, and fires alerts to **Telegram** — written like a message from a slightly unhinged 80s Wall Street broker.
+A signal pipeline + Telegram bot that monitors **7 independent data sources**, cross-references them into a confidence score, and fires alerts written like messages from a slightly unhinged 80s Wall Street broker.
 
-It watches what corporate insiders, politicians, activist investors, institutional funds, short sellers, and options traders are doing. When multiple independent actors make the same bet on the same stock, it tells you about it.
+It watches what corporate insiders, politicians, activist investors, institutional funds, short sellers, and options traders are doing. When multiple independent actors make the same bet on the same stock, it tells you — and explains what the company does and why they might be moving.
+
+You can also **talk to it on Telegram** in plain Spanish: tell it what you bought, ask for your portfolio, and it will alert you when exit signals appear.
 
 > **Disclaimer:** This system generates **ideas to research**, not investment recommendations. Every alert includes a mandatory disclaimer. Do not use this software as the basis for financial decisions.
 
@@ -82,20 +84,57 @@ Supports any LLM provider — **Groq and Gemini are free**:
 
 ---
 
+## Telegram bot — conversational interface
+
+When running in `--serve` mode, the agent listens to your Telegram messages in real time. Just talk to it naturally in Spanish — it uses an LLM to understand what you mean, map company names to tickers, and ask for missing info.
+
+```
+You:  "oye compré 50 de Apple a 178"
+Bot:  ✓ Listo. AAPL en tu portafolio.
+      50 acc @ $178.00 = $8.9k
+      Te aviso si algo cambia.
+
+You:  "compré nvidia"
+Bot:  ¿Cuántas acciones y a qué precio compraste NVDA?
+
+You:  "100 a 890"
+Bot:  ✓ Listo. NVDA en tu portafolio.
+      100 acc @ $890.00 = $89k
+
+You:  "portafolio"
+Bot:  Portafolio (2 posiciones)
+      • AAPL  50 acc @ $178.00
+      • NVDA  100 acc @ $890.00
+
+You:  "vendí apple"
+Bot:  ✓ AAPL removido del portafolio y watchlist.
+
+You:  "vigila Tesla"
+Bot:  ✓ TSLA en la watchlist.
+      Alertas cuando suba ≥7% en un día.
+```
+
+The LLM understands: company names in Spanish or English, abbreviations, nicknames ("la de los chips" → NVDA, "la de Elon" → TSLA). If something is ambiguous it asks, never guesses.
+
+**Start the full agent (pipeline + bot):**
+```bash
+python main.py --serve
+```
+
+---
+
 ## Portfolio tracking & exit alerts
 
-Tell the agent when you act on a signal. It will monitor that position and fire an exit alert if the same signals start reversing.
+Once a position is registered (via Telegram chat or CLI), the agent monitors it every 15 minutes and fires an **exit alert** if the same signals start reversing.
 
 ```bash
-# After receiving a signal and deciding to buy:
+# CLI alternative to chatting with the bot:
 python main.py --add IMVT 500 5.62 --note "MUY ALTA score=106 — 3 insiders same day"
-
-# View your portfolio:
 python main.py --portfolio
-
-# When you exit:
 python main.py --remove IMVT
 ```
+
+When you add a position it is **automatically added to the watchlist** too — no extra step needed.
 
 Exit signals are the mirror of entry signals: insider selling, politicians selling, activists reducing stake, short interest rising, unusual PUT options. Exit alerts only fire at **ALTA (56+)** or **MUY ALTA (86+)** — insider selling is noisier than buying.
 
@@ -160,14 +199,22 @@ make setup
 python main.py --once --dry-run
 ```
 
-Signals print in your terminal. If you see `No new qualifying signals` it means this specific batch of filings didn't pass the filters — normal. Try `MIN_TRADE_VALUE_USD=10000` in your `.env` to force output.
+Signals print in your terminal. If you see `No new qualifying signals` it means no filings passed the filters in this batch — normal. Try `MIN_TRADE_VALUE_USD=10000` in your `.env` to force output.
 
-**5 — Schedule it** (runs every 15 min automatically)
+**5 — Run the full agent** (pipeline + Telegram bot, recommended)
 ```bash
-make install-launchd    # recommended — background agent, survives reboots
-# or
+python main.py --serve
+```
+
+This starts the pipeline (every 15 min) **and** listens to your Telegram messages at the same time. You can now chat with it: "compré 50 de Apple a 178", "portafolio", "vigila Tesla".
+
+**6 — Or schedule it as a background service** (runs automatically, no terminal needed)
+```bash
+make install-launchd    # macOS — background agent, survives reboots
 make install-cron       # alternative via crontab
 ```
+
+> Note: `--serve` and the scheduler/launchd modes are mutually exclusive. Use `--serve` if you want the interactive Telegram bot. Use `make install-launchd` / `make install-cron` if you only need scheduled pipeline alerts without the bot.
 
 ---
 
@@ -372,7 +419,8 @@ Full guide: [DEPLOY.md](DEPLOY.md)
 | `exit_signals.py` | Exit signal detection + scoring for portfolio positions |
 | `portfolio.py` | Portfolio positions + watchlist store |
 | `pipeline.py` | Full orchestration — all sources → score → alert |
-| `main.py` | CLI entrypoint |
+| `main.py` | CLI entrypoint — `--serve`, `--once`, `--dry-run`, portfolio commands |
+| `telegram_listener.py` | Telegram long-polling bot — parses natural language via LLM |
 | `cloud_function.py` | GCP Cloud Functions gen2 HTTP entrypoint |
 | `setup.py` | Interactive configuration wizard |
 | `state.py` | Deduplication + state cache (File / Firestore / GCS) |
