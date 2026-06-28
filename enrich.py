@@ -92,19 +92,17 @@ def _fallback_tier(ts: "TierScore") -> str:
         parts.append(f"short interest cayó {ts.short_interest.decline_pct:.0f}%")
     if ts.unusual_options:
         parts.append(f"opciones call inusuales detectadas")
-    summary = ", ".join(parts) if parts else "actividad detectada"
-    return (
-        f"{ts.ticker} ({ts.issuer_name}): {summary}. "
-        f"Score: {ts.total_score:.0f} — señal {ts.tier}."
-    )
+    summary = " y ".join(parts) if parts else "actividad detectada"
+    return f"En {ts.issuer_name}, {summary}."
 
 
 def _fallback_signal(signal: "Signal") -> str:
+    from notify import _fmt_date, _fmt_money, _fmt_role
     txn = signal.transaction
+    role = _fmt_role(txn.role_labels)
     return (
-        f"{txn.owner_name} ({', '.join(txn.role_labels)}) de {txn.issuer_name} "
-        f"({txn.ticker}) compró {txn.shares:,.0f} acciones a ${txn.price:,.2f} "
-        f"(total: ${txn.value:,.0f}) el {txn.transaction_date}."
+        f"El {role} de {txn.issuer_name} compró {_fmt_money(txn.value)} "
+        f"{_fmt_date(txn.transaction_date)}."
     )
 
 

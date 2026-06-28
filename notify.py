@@ -1,17 +1,20 @@
 """
-Telegram notifier — broker de los 80 edition.
+Telegram notifier — optimizado para lectura en móvil.
 
-El tono del mensaje escala con el tier de la señal:
-  BAJA     → mensaje limpio y profesional
-  MEDIA    → algo interesante, vale la pena
-  ALTA     → el broker se emociona
-  MUY ALTA → el broker pierde la cabeza (de la mejor manera)
+Principios de diseño:
+  - Líneas cortas (≤40 chars de contenido)
+  - Montos en formato $159k / $1.2M
+  - Fechas en lenguaje natural (hoy, ayer, hace 3 días)
+  - Sin jerga técnica (no Vol/OI ratios, no scores numéricos)
+  - Info más importante arriba
+  - Disclaimer corto al final
 """
 from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, List
+from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from scorer import TierScore
@@ -22,54 +25,133 @@ import requests
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
-_DISCLAIMER_RAW = (
-    "Idea para investigar basada en datos públicos "
-    "(SEC EDGAR, divulgaciones del Congreso). "
-    "No es recomendación de inversión."
-)
 
 _MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 
 def _e(t: str) -> str:
     return _MDV2.sub(r"\\\1", str(t))
 
-def _usd(v: float) -> str:
-    return _e(f"${v:,.0f}")
 
-def _shares(v: float) -> str:
-    return _e(f"{v:,.0f}")
+# ── Format helpers ─────────────────────────────────────────────────────────────
 
-
-# ── Tier headers ───────────────────────────────────────────────────────────────
-
-_HEADERS = {
-    "BAJA": (
-        "Actividad de insider registrada",
-        "SEÑAL: BAJA",
-    ),
-    "MEDIA": (
-        "Actividad interesante detectada",
-        "SEÑAL: MEDIA",
-    ),
-    "ALTA": (
-        "El dinero listo se esta moviendo",
-        "SEÑAL FUERTE",
-    ),
-    "MUY ALTA": (
-        "CONFLUENCIA TOTAL — MAXIMO NIVEL",
-        "ALERTA MAXIMA",
-    ),
-}
-
-_SCORE_BAR = {
-    "BAJA":     "▓░░░░",
-    "MEDIA":    "▓▓▓░░",
-    "ALTA":     "▓▓▓▓░",
-    "MUY ALTA": "▓▓▓▓▓",
-}
+def _fmt_money(value: float) -> str:
+    if value >= 1_000_000:
+        return f"${value/1_000_000:.1f}M"
+    if value >= 10_000:
+        return f"${value/1_000:.0f}k"
+    return f"${value:,.0f}"
 
 
-# ── Main: send_tier_score ──────────────────────────────────────────────────────
+def _fmt_date(date_str: str) -> str:
+    """Convert ISO date to 'hoy', 'ayer', 'hace N días', or 'el DD/MM'."""
+    try:
+        d = date.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        return date_str or "fecha desconocida"
+    today = date.today()
+    diff = (today - d).days
+    if diff == 0:   return "hoy"
+    if diff == 1:   return "ayer"
+    if diff <= 6:   return f"hace {diff} días"
+    return f"el {d.day}/{d.month}"
+
+
+def _fmt_role(roles: list) -> str:
+    """Return the most important role in plain language."""
+    priority = ["CEO", "CFO", "COO", "PRES", "DIR", "TENPCT", "OFFICER"]
+    for r in priority:
+        if r in roles:
+            labels = {"CEO":"CEO","CFO":"CFO","COO":"COO","PRES":"Presidente",
+                      "DIR":"Director","TENPCT":"Accionista 10%","OFFICER":"Ejecutivo"}
+            return labels.get(r, r)
+    return roles[0] if roles else "Insider"
+
+
+def _tier_header(tier: str) -> str:
+    return {
+        "MUY ALTA": "Señal MUY ALTA",
+        "ALTA":     "Señal ALTA",
+        "MEDIA":    "Señal MEDIA",
+        "BAJA":     "Señal baja",
+    }.get(tier, tier)
+
+
+_DISCLAIMER = "Idea para investigar, no consejo de inversión."
+
+
+# ── Entry signal ───────────────────────────────────────────────────────────────
+
+def _build_signal_message(ts: "TierScore", brief: str) -> str:
+    lines = []
+
+    # Header
+    lines.append(f"*{_e(ts.ticker)}*  ·  {_e(_tier_header(ts.tier))}")
+
+    # Price confirmation (when present)
+    if ts.has_price_confirmation:
+        ps = ts.price_snapshot
+        lines.append(f"📈 Precio \\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy · ${_e(f'{ps.current_price:.2f}')}")
+
+    lines.append("")
+
+    # Brief from LLM (first, most readable part)
+    if brief:
+        lines.append(_e(brief))
+        lines.append("")
+
+    # Insiders
+    if ts.insider_signals:
+        distinct = len({s.transaction.owner_name for s in ts.insider_signals})
+        if distinct > 1:
+            total_val = sum(s.transaction.value for s in ts.insider_signals)
+            lines.append(f"*{distinct} directivos compraron · {_e(_fmt_money(total_val))} total*")
+        for sig in ts.insider_signals[:4]:
+            t = sig.transaction
+            role = _fmt_role(t.role_labels)
+            lines.append(f"  · {_e(role)}: {_e(_fmt_money(t.value))} {_e(_fmt_date(t.transaction_date))}")
+
+    # Politicians
+    if ts.politician_trades:
+        seen: set = set()
+        pols = [p for p in ts.politician_trades if not (seen.add(p.politician_name) or p.politician_name in seen - {p.politician_name})]
+        # simpler dedup
+        seen2: set = set()
+        unique_pols = []
+        for p in ts.politician_trades:
+            if p.politician_name not in seen2:
+                seen2.add(p.politician_name)
+                unique_pols.append(p)
+        if unique_pols:
+            lines.append("")
+            lines.append(f"*Políticos comprando*")
+            for p in unique_pols[:3]:
+                name = p.politician_name.split(",")[0].strip()  # "Pelosi, Nancy" → "Pelosi"
+                amt = f" · {_e(p.amount_range)}" if p.amount_range else ""
+                lines.append(f"  · {_e(name)}{amt}")
+
+    # Activists
+    if ts.activist_filings:
+        lines.append("")
+        for a in ts.activist_filings[:2]:
+            name = a.filer_name.split("/")[0].strip()
+            lines.append(f"*Activista {_e(a.filing_type)}:* {_e(name)}")
+
+    # Short interest
+    if ts.short_interest and ts.short_interest.decline_pct >= 10:
+        si = ts.short_interest
+        lines.append("")
+        lines.append(f"Cortos cubriendo posiciones \\(\\-{_e(f'{si.decline_pct:.0f}%')}\\)")
+
+    # Options
+    if ts.unusual_options:
+        opt = ts.unusual_options[0]
+        lines.append("")
+        lines.append(f"Opciones call inusuales detectadas")
+
+    lines.append("")
+    lines.append(_e(_DISCLAIMER))
+    return "\n".join(lines)
+
 
 def send_tier_score(
     ts: "TierScore",
@@ -78,323 +160,155 @@ def send_tier_score(
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    """Send a fully-scored TierScore message to Telegram."""
-    message = _build_tier_message(ts, brief)
+    message = _build_signal_message(ts, brief)
     _send(message, bot_token, chat_id, dry_run,
-          label=f"{ts.tier} {ts.ticker} score={ts.total_score:.0f}")
+          label=f"{ts.tier} {ts.ticker}")
 
 
-def _build_tier_message(ts: "TierScore", brief: str) -> str:
-    subtitle, badge = _HEADERS.get(ts.tier, ("Señal detectada", "SEÑAL"))
-    bar = _SCORE_BAR.get(ts.tier, "▓░░░░")
-    score_line = f"{bar} *{_e(ts.tier)}* \\| Score: *{_e(str(int(ts.total_score)))}* pts"
-
-    # Price confirmation banner (shown right in the header when present)
-    price_banner = ""
-    if ts.has_price_confirmation:
-        ps = ts.price_snapshot
-        price_banner = (
-            f"\n*precio ahora mismo:* \\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy "
-            f"\\| Vol {_e(f'{ps.volume_ratio:.1f}')}x \\| "
-            f"${_e(f'{ps.current_price:.2f}')}"
-        )
-
-    lines = [
-        f"*{_e(ts.ticker)}* — {_e(subtitle)}",
-        score_line,
-        price_banner,
-        "",
-    ]
-
-    # ── Insiders ───────────────────────────────────────────────────────────
-    if ts.insider_signals:
-        n = len(ts.insider_signals)
-        distinct = len({s.transaction.owner_name for s in ts.insider_signals})
-        lines.append(f"*Insiders \\({_e(str(distinct))}\\):*")
-        for sig in ts.insider_signals[:4]:
-            t = sig.transaction
-            roles = ", ".join(t.role_labels)
-            lines.append(
-                f"  • {_e(t.owner_name)} \\({_e(roles)}\\) "
-                f"→ {_usd(t.value)} el {_e(t.transaction_date)}"
-            )
-        if n > 4:
-            lines.append(f"  \\+{_e(str(n-4))} más")
-
-    # ── Politicians ────────────────────────────────────────────────────────
-    if ts.politician_trades:
-        seen: set = set()
-        unique_pols = []
-        for p in ts.politician_trades:
-            if p.politician_name not in seen:
-                seen.add(p.politician_name)
-                unique_pols.append(p)
-        lines.append(f"\n*Políticos \\({_e(str(len(unique_pols)))}\\):*")
-        for p in unique_pols[:4]:
-            amt = f" ~ {_e(p.amount_range)}" if p.amount_range else ""
-            dt = f" el {_e(p.transaction_date)}" if p.transaction_date else ""
-            lines.append(f"  • {_e(p.label)}{amt}{dt}")
-
-    # ── Activists ──────────────────────────────────────────────────────────
-    if ts.activist_filings:
-        lines.append(f"\n*Activistas \\(13D/13G\\):*")
-        for a in ts.activist_filings[:3]:
-            stake = f"{a.stake_pct:.1f}%" if a.stake_pct else "≥5%"
-            lines.append(
-                f"  • {_e(a.filer_name)} \\({_e(a.filing_type)}\\) "
-                f"→ {_e(stake)} stake el {_e(a.filing_date)}"
-            )
-
-    # ── Institutional ──────────────────────────────────────────────────────
-    if ts.institutional_positions:
-        lines.append(f"\n*Institucionales \\(13F\\):*")
-        for ip in ts.institutional_positions[:3]:
-            lines.append(
-                f"  • {_e(ip.fund_name)} → nueva posición {_usd(ip.value_usd)}"
-            )
-
-    # ── Short interest ─────────────────────────────────────────────────────
-    if ts.short_interest and ts.short_interest.decline_pct >= 10:
-        si = ts.short_interest
-        lines.append(
-            f"\n*Short Interest:* cayó {_e(f'{si.decline_pct:.0f}%')} "
-            f"\\(ahora {_e(f'{si.current_pct:.1f}%')} del float\\)"
-        )
-
-    # ── Unusual options ────────────────────────────────────────────────────
-    if ts.unusual_options:
-        opt = ts.unusual_options[0]
-        lines.append(
-            f"\n*Opciones inusuales:* {_e(opt.option_type)} "
-            f"strike {_e(str(opt.strike))} exp {_e(opt.expiration)} "
-            f"\\| Vol/OI: *{_e(f'{opt.volume_oi_ratio:.1f}')}x*"
-        )
-
-    # ── Score breakdown ────────────────────────────────────────────────────
-    n_sources = len(ts.active_source_types)
-    lines.append(
-        f"\n*{_e(str(n_sources))} fuente{'s' if n_sources != 1 else ''} independiente{'s' if n_sources != 1 else ''}* confirmando"
-    )
-
-    # ── Brief ──────────────────────────────────────────────────────────────
-    lines.append(f"\n{_e(brief)}")
-
-    lines.append(f"\n{_e(_DISCLAIMER_RAW)}")
-    return "\n".join(lines)
-
-
-# ── Exit alert ────────────────────────────────────────────────────────────────
-
-_EXIT_HEADERS = {
-    "MEDIA":    "Actividad de ventas detectada en tu posición",
-    "ALTA":     "El dinero se esta moviendo — señal de salida",
-    "MUY ALTA": "ALERTA MAXIMA DE SALIDA — TODOS ESTAN VENDIENDO",
-}
-_EXIT_BARS = {
-    "BAJA":     "░░░░░",
-    "MEDIA":    "▓▓░░░",
-    "ALTA":     "▓▓▓▓░",
-    "MUY ALTA": "▓▓▓▓▓",
-}
-
+# ── Exit alert ─────────────────────────────────────────────────────────────────
 
 def send_exit_alert(
-    exit_score,          # ExitTierScore
-    position,            # portfolio.Position
+    exit_score,
+    position,
     brief: str,
     bot_token: str,
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    message = _build_exit_message(exit_score, position, brief)
-    _send(message, bot_token, chat_id, dry_run,
-          label=f"EXIT {exit_score.ticker} [{exit_score.tier}] score={exit_score.total_score:.0f}")
+    es = exit_score
+    lines = []
 
-
-def _build_exit_message(exit_score, position, brief: str) -> str:
-    subtitle = _EXIT_HEADERS.get(exit_score.tier, "Señal de salida")
-    bar = _EXIT_BARS.get(exit_score.tier, "▓░░░░")
-
-    lines = [
-        f"*{_e(exit_score.ticker)}* — {_e(subtitle)}",
-        f"{bar} *SALIDA {_e(exit_score.tier)}* \\| Score: *{_e(str(int(exit_score.total_score)))}* pts",
-        "",
-        f"*Tu posición:* {_shares(position.shares)} acc @ {_usd(position.buy_price)} "
-        f"el {_e(position.buy_date)}",
-    ]
-    if position.notes:
-        lines.append(f"*Nota:* {_e(position.notes)}")
-
+    lines.append(f"*{_e(es.ticker)}*  ·  Posible señal de salida")
     lines.append("")
 
-    if exit_score.insider_sells:
-        distinct = len({t.owner_name for t in exit_score.insider_sells})
-        total_val = sum(t.value for t in exit_score.insider_sells)
-        lines.append(f"*Insiders vendiendo \\({_e(str(distinct))}\\):*")
-        for t in exit_score.insider_sells[:4]:
-            roles = ", ".join(t.role_labels)
-            lines.append(
-                f"  • {_e(t.owner_name)} \\({_e(roles)}\\) "
-                f"vendió {_usd(t.value)} el {_e(t.transaction_date)}"
-            )
+    # Position summary
+    days_held = (date.today() - date.fromisoformat(position.buy_date)).days if position.buy_date else 0
+    held_str = "hoy" if days_held == 0 else ("ayer" if days_held == 1 else f"hace {days_held} días")
+    lines.append(f"Tu posición: {position.shares:,.0f} acc · {_e(_fmt_money(position.buy_price))} c/u")
+    lines.append(f"Compraste {held_str}")
+    lines.append("")
 
-    if exit_score.politician_sells:
+    # Brief
+    if brief:
+        lines.append(_e(brief))
+        lines.append("")
+
+    # What's happening
+    lines.append("*Qué está pasando:*")
+
+    if es.insider_sells:
+        distinct = len({t.owner_name for t in es.insider_sells})
+        total = sum(t.value for t in es.insider_sells)
+        lines.append(f"  · {distinct} insider{'s' if distinct > 1 else ''} vendió{'n' if distinct > 1 else ''} {_e(_fmt_money(total))}")
+
+    if es.politician_sells:
         seen: set = set()
-        unique = [p for p in exit_score.politician_sells
-                  if p.politician_name not in seen and not seen.add(p.politician_name)]
-        lines.append(f"\n*Políticos vendiendo \\({_e(str(len(unique)))}\\):*")
-        for p in unique[:3]:
-            amt = f" ~ {_e(p.amount_range)}" if p.amount_range else ""
-            lines.append(f"  • {_e(p.label)}{amt}")
+        n = 0
+        for p in es.politician_sells:
+            if p.politician_name not in seen:
+                seen.add(p.politician_name)
+                n += 1
+        lines.append(f"  · {n} político{'s' if n > 1 else ''} vendió{'n' if n > 1 else ''}")
 
-    if exit_score.activist_reductions:
-        lines.append(f"\n*Activistas reduciendo:*")
-        for a in exit_score.activist_reductions[:2]:
-            lines.append(f"  • {_e(a.filer_name)} \\({_e(a.filing_type)}\\)")
+    if es.activist_reductions:
+        lines.append(f"  · Activista reduciendo posición")
 
-    if exit_score.short_interest:
-        si = exit_score.short_interest
-        rise = -si.decline_pct
+    if es.short_interest:
+        rise = -es.short_interest.decline_pct
         if rise >= 10:
-            lines.append(
-                f"\n*Short Interest:* subió {_e(f'{rise:.0f}%')} "
-                f"\\(ahora {_e(f'{si.current_pct:.1f}%')} del float\\)"
-            )
+            lines.append(f"  · Cortos aumentaron {_e(f'{rise:.0f}%')}")
 
-    if exit_score.unusual_puts:
-        opt = exit_score.unusual_puts[0]
-        lines.append(
-            f"\n*PUTs inusuales:* strike {_e(str(opt.strike))} "
-            f"exp {_e(opt.expiration)} \\| Vol/OI: *{_e(f'{opt.volume_oi_ratio:.1f}')}x*"
-        )
+    if es.unusual_puts:
+        lines.append(f"  · Opciones PUT inusuales")
 
-    n_sources = len(exit_score.active_source_types)
-    lines.append(
-        f"\n*{_e(str(n_sources))} fuente{'s' if n_sources != 1 else ''} "
-        f"independiente{'s' if n_sources != 1 else ''}* señalando salida"
-    )
+    lines.append("")
+    lines.append(_e(_DISCLAIMER))
 
-    lines.append(f"\n{_e(brief)}")
-    lines.append(f"\n{_e(_DISCLAIMER_RAW)}")
-    return "\n".join(lines)
+    message = "\n".join(lines)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"EXIT {es.ticker} [{es.tier}]")
 
 
-# ── Price-only alert (portfolio position, no new signal) ─────────────────────
+# ── Portfolio price spike (position moving, no new signal) ────────────────────
 
 def send_price_only_alert(
-    price_snapshot,      # PriceSnapshot
-    position,            # portfolio.Position or None
+    price_snapshot,
+    position,
     bot_token: str,
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    """
-    Standalone price spike alert for a portfolio position that has no
-    new scoring signal this cycle.
-    """
     ps = price_snapshot
-    strength = ps.spike_strength
+    days_held = 0
+    if position and position.buy_date:
+        try:
+            days_held = (date.today() - date.fromisoformat(position.buy_date)).days
+        except Exception:
+            pass
 
-    strength_labels = {
-        "EXTREMO":    "MOVIMIENTO EXTREMO",
-        "MUY_FUERTE": "Subida muy fuerte",
-        "FUERTE":     "Subida fuerte",
-    }
-    label = strength_labels.get(strength, "Movimiento de precio")
+    held_str = "hoy" if days_held == 0 else ("ayer" if days_held == 1 else f"hace {days_held} días")
 
     lines = [
-        f"*{_e(ps.ticker)}* — {_e(label)}",
-        f"*\\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy* \\| "
-        f"Vol: *{_e(f'{ps.volume_ratio:.1f}')}x* promedio \\| "
-        f"${_e(f'{ps.current_price:.2f}')}",
+        f"*{_e(ps.ticker)}*  ·  Tu posición está subiendo",
+        f"📈 \\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy · ${_e(f'{ps.current_price:.2f}')}",
         "",
     ]
 
     if position:
         unrealized_pct = ((ps.current_price - position.buy_price) / position.buy_price) * 100
         unrealized_usd = (ps.current_price - position.buy_price) * position.shares
-        gain_str = f"\\+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
+        sign = "\\+" if unrealized_pct >= 0 else ""
         lines += [
-            f"*Tu posición:* {_shares(position.shares)} acc @ {_usd(position.buy_price)}",
-            f"*Ganancia no realizada:* {_usd(abs(unrealized_usd))} \\({gain_str}\\)",
+            f"Compraste {position.shares:,.0f} acc · {_e(_fmt_money(position.buy_price))} c/u",
+            f"Compraste {held_str}",
+            f"Ganancia: {_e(_fmt_money(abs(unrealized_usd)))} \\({sign}{_e(f'{unrealized_pct:.1f}')}%\\)",
         ]
-        if position.notes:
-            lines.append(f"*Nota original:* {_e(position.notes)}")
-        lines.append("")
 
-    lines += [
-        f"*Apertura:* ${_e(f'{ps.open_price:.2f}')} \\| "
-        f"*Máx hoy:* ${_e(f'{ps.day_high:.2f}')} \\| "
-        f"*Mín hoy:* ${_e(f'{ps.day_low:.2f}')}",
-        "",
-        _e(_DISCLAIMER_RAW),
-    ]
+    lines.append("")
+    lines.append(_e(_DISCLAIMER))
 
     message = "\n".join(lines)
     _send(message, bot_token, chat_id, dry_run,
           label=f"PriceSpike {ps.ticker} +{ps.pct_change_vs_close:.1f}%")
 
 
-# ── Watchlist price alert (standalone — no signal required) ───────────────────
-
-_WATCHLIST_TIER_LABELS = {
-    "EXTREMO": "MOVIMIENTO EXTREMO",
-    "FUERTE":  "Subida fuerte",
-    "NOTABLE": "Movimiento notable",
-}
-
-_WATCHLIST_BARS = {
-    "EXTREMO": "▓▓▓▓▓",
-    "FUERTE":  "▓▓▓▓░",
-    "NOTABLE": "▓▓▓░░",
-}
-
+# ── Watchlist price alert ──────────────────────────────────────────────────────
 
 def send_watchlist_alert(
-    price_snapshot,      # PriceSnapshot
+    price_snapshot,
     bot_token: str,
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    """
-    Pure price movement alert for a watchlist ticker.
-    No signal correlation — just: this stock is moving significantly.
-    """
     ps = price_snapshot
-    strength = ps.spike_strength
-    label = _WATCHLIST_TIER_LABELS.get(strength, "Movimiento de precio")
-    bar   = _WATCHLIST_BARS.get(strength, "▓▓░░░")
+    strength_labels = {
+        "EXTREMO": "subida extrema",
+        "FUERTE":  "subida fuerte",
+        "NOTABLE": "movimiento notable",
+    }
+    label = strength_labels.get(ps.spike_strength, "movimiento de precio")
 
-    # Volume context line (informational only, not a gate)
-    vol_ctx = ""
+    vol_note = ""
     if ps.volume_ratio >= 3.0:
-        vol_ctx = f" \\| Vol *{_e(f'{ps.volume_ratio:.1f}')}x* — fuerte respaldo"
-    elif ps.volume_ratio >= 1.5:
-        vol_ctx = f" \\| Vol {_e(f'{ps.volume_ratio:.1f}')}x promedio"
+        vol_note = f" · volumen {_e(f'{ps.volume_ratio:.1f}')}x"
     elif ps.volume_ratio < 0.8:
-        vol_ctx = f" \\| Vol bajo — movimiento en mercado delgado"
+        vol_note = " · volumen bajo"
 
     lines = [
-        f"*{_e(ps.ticker)}* — {_e(label)}",
-        f"{bar} *\\+{_e(f'{ps.pct_change_vs_close:.1f}')}%* hoy{vol_ctx}",
+        f"*{_e(ps.ticker)}*  ·  {_e(label.capitalize())}",
+        f"📈 \\+{_e(f'{ps.pct_change_vs_close:.1f}%')} hoy · ${_e(f'{ps.current_price:.2f}')}{vol_note}",
         "",
-        f"*Precio:* ${_e(f'{ps.current_price:.2f}')}",
-        f"*Apertura:* ${_e(f'{ps.open_price:.2f}')} \\| "
-        f"*Máx:* ${_e(f'{ps.day_high:.2f}')} \\| "
-        f"*Mín:* ${_e(f'{ps.day_low:.2f}')}",
-        f"*Cambio vs apertura:* {_e(f'{ps.pct_change_vs_open:+.1f}')}%",
+        f"En tu watchlist\\. Sin señal de insiders activa\\.",
         "",
-        _e("En tu watchlist. Sin señal de insiders/políticos activa en este ciclo."),
-        "",
-        _e(_DISCLAIMER_RAW),
+        _e(_DISCLAIMER),
     ]
 
     message = "\n".join(lines)
     _send(message, bot_token, chat_id, dry_run,
-          label=f"Watchlist {ps.ticker} +{ps.pct_change_vs_close:.1f}% [{strength}]")
+          label=f"Watchlist {ps.ticker} +{ps.pct_change_vs_close:.1f}%")
 
 
-# ── Legacy: single signal (for backward compat) ───────────────────────────────
+# ── Legacy: single signal (backward compat) ───────────────────────────────────
 
 def send_signal(
     signal: "Signal",
@@ -404,31 +318,25 @@ def send_signal(
     dry_run: bool = False,
 ) -> None:
     txn = signal.transaction
-    cluster_tag = "  \\[CLUSTER\\]" if signal.is_cluster else ""
-    cluster_tag2 = "  \\+cluster bonus" if signal.is_cluster else ""
-
+    role = _fmt_role(txn.role_labels)
     lines = [
-        f"*{_e(txn.ticker)}* — Compra Insider{cluster_tag}",
-        f"▓░░░░ *BAJA/MEDIA* \\| sin score completo",
+        f"*{_e(txn.ticker)}*  ·  Compra insider",
         "",
-        f"*Insider:* {_e(txn.owner_name)} \\({_e(', '.join(txn.role_labels))}\\)",
-        f"*Monto:* {_usd(txn.value)}  \\({_shares(txn.shares)} acc × {_e(f'${txn.price:,.2f}')}\\)",
-        f"*Fecha:* {_e(txn.transaction_date)}",
-        f"*Tenencia post:* {_shares(txn.shares_owned_following)} acc",
-        "",
-        _e(brief),
-        "",
-        _e(_DISCLAIMER_RAW),
+        f"{_e(role)} compró {_e(_fmt_money(txn.value))} {_e(_fmt_date(txn.transaction_date))}",
     ]
+    if signal.is_cluster:
+        lines.append(f"Cluster: {signal.cluster_size} directivos compraron esta semana")
+    if brief:
+        lines += ["", _e(brief)]
+    lines += ["", _e(_DISCLAIMER)]
 
     _send("\n".join(lines), bot_token, chat_id, dry_run,
           label=f"Signal {txn.ticker}")
 
 
-# ── Legacy: confluence (for backward compat) ──────────────────────────────────
+# ── Legacy: confluence (backward compat) ──────────────────────────────────────
 
 def send_confluence(csig, brief: str, bot_token: str, chat_id: str, dry_run: bool = False) -> None:
-    """Route to send_signal using primary signal."""
     if csig.insider_signals:
         send_signal(csig.primary_signal, brief, bot_token, chat_id, dry_run)
 
@@ -437,7 +345,7 @@ def send_confluence(csig, brief: str, bot_token: str, chat_id: str, dry_run: boo
 
 def _send(message: str, bot_token: str, chat_id: str, dry_run: bool, label: str = "") -> None:
     if dry_run:
-        sep = "=" * 60
+        sep = "─" * 50
         print(f"\n{sep}")
         print(f"[DRY RUN] {label}")
         print(message)
