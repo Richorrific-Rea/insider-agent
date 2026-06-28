@@ -84,12 +84,16 @@ class PortfolioStore:
             notes=notes,
         )
         self._positions[p.ticker] = p
+        self._watchlist.add(p.ticker)   # auto-watch any owned position
         self.save()
         return p
 
     def remove_position(self, ticker: str) -> bool:
         removed = self._positions.pop(ticker.upper(), None)
         if removed:
+            # Remove from watchlist only if it was auto-added (not manually added)
+            # We can't tell the difference, so we remove it. User can re-watch manually.
+            self._watchlist.discard(ticker.upper())
             self.save()
         return removed is not None
 

@@ -213,6 +213,8 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
     # ── 9. Portfolio exit surveillance ────────────────────────────────────
     portfolio = PortfolioStore(path=cfg.state_file_path)
     positions = portfolio.get_positions()
+    price_alerted_tickers: Set[str] = set()  # tickers that already got a price alert this cycle
+
     if positions:
         logger.info("Checking exit signals for %d portfolio position(s)…", len(positions))
         portfolio_tickers = {p.ticker for p in positions}
@@ -306,6 +308,7 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
                     dry_run=dry_run,
                 )
                 notified += 1
+                price_alerted_tickers.add(ticker)
                 logger.info(
                     "Price spike alert: %s +%.1f%% vol=%.1fx",
                     ticker, ps.pct_change_vs_close, ps.volume_ratio,
@@ -318,11 +321,10 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
         for ticker in watchlist:
             ps = price_data.get(ticker)
             if ps and ps.is_moving(cfg.watchlist_spike_pct):
-                # If this ticker also has insider signals this cycle, the
-                # combined message was already sent — skip standalone alert
-                if ticker in hot_tickers:
+                # Skip if already covered by a signal message or portfolio alert
+                if ticker in hot_tickers or ticker in price_alerted_tickers:
                     logger.debug(
-                        "Watchlist %s already covered by signal message", ticker
+                        "Watchlist %s already covered by signal/portfolio message", ticker
                     )
                     continue
                 send_watchlist_alert(
