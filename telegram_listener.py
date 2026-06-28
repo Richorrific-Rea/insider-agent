@@ -99,23 +99,33 @@ def _build_parse_system(lang: str) -> str:
 
 # ── Telegram API helpers ──────────────────────────────────────────────────────
 
-def _tg(token: str, method: str, **data) -> dict:
+def _tg(token: str, method: str, read_timeout: int = 10, **data) -> dict:
+    """
+    Call a Telegram Bot API method.
+    read_timeout controls the requests socket timeout — must be > any
+    long-polling 'timeout' param to avoid spurious read timeouts.
+    """
     url = TELEGRAM_API.format(token=token, method=method)
     try:
-        resp = requests.post(url, json=data, timeout=10)
+        resp = requests.post(url, json=data, timeout=read_timeout)
         resp.raise_for_status()
         return resp.json()
+    except requests.exceptions.ReadTimeout:
+        # Long-poll expired normally — not an error
+        return {}
     except Exception as exc:
         logger.error("Telegram API error (%s): %s", method, exc)
         return {}
 
 
 def _send(token: str, chat_id: str, text: str) -> None:
-    _tg(token, "sendMessage", chat_id=chat_id, text=text)
+    _tg(token, "sendMessage", read_timeout=10, chat_id=chat_id, text=text)
 
 
 def _get_updates(token: str, offset: int) -> list:
-    result = _tg(token, "getUpdates", offset=offset, timeout=20, limit=10)
+    # Long-poll timeout=20 means Telegram holds the connection up to 20s.
+    # The requests read_timeout must exceed that to avoid spurious errors.
+    result = _tg(token, "getUpdates", read_timeout=30, offset=offset, timeout=20, limit=10)
     return result.get("result", [])
 
 
