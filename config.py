@@ -102,7 +102,7 @@ def load_config() -> Config:
         feed_count=_int("FEED_COUNT", 100),
         only_open_market_purchase=_bool("ONLY_OPEN_MARKET_PURCHASE", True),
         allowed_roles=_set("ALLOWED_ROLES", {"CEO", "CFO", "PRES", "DIR"}),
-        min_trade_value_usd=_float("MIN_TRADE_VALUE_USD", 100_000),
+        min_trade_value_usd=_float("MIN_TRADE_VALUE_USD", 50_000),
         min_delta_own_pct=_float("MIN_DELTA_OWN_PCT", 0.0),
         cluster_window_days=_int("CLUSTER_WINDOW_DAYS", 7),
         cluster_min_insiders=_int("CLUSTER_MIN_INSIDERS", 2),
