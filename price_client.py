@@ -58,11 +58,14 @@ class PriceSnapshot:
 
     @property
     def is_spiking(self) -> bool:
-        """True if price move is significant — volume is context, NOT a gate."""
-        return self.pct_change_vs_close >= 5.0
+        """True if price AND volume both confirm an unusual move (main flow)."""
+        return (
+            self.pct_change_vs_close >= 5.0
+            and self.volume_ratio >= 1.5
+        )
 
     def is_moving(self, threshold_pct: float = 7.0) -> bool:
-        """General price move check for watchlist — only needs % change."""
+        """Watchlist check — only needs % change, no volume requirement."""
         return self.pct_change_vs_close >= threshold_pct
 
     @property
