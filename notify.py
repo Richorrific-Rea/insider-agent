@@ -1,71 +1,182 @@
 """
-Telegram notifier.
+Telegram notifier — broker de los 80 edition.
 
-Two message types:
-  1. send_signal()      — single insider purchase (plain signal)
-  2. send_confluence()  — ticker bought by insiders + politicians (high-confidence)
-
-Uses MarkdownV2 formatting. Supports dry_run mode.
+El tono del mensaje escala con el tier de la señal:
+  BAJA     → mensaje limpio y profesional
+  MEDIA    → algo interesante, vale la pena
+  ALTA     → el broker se emociona
+  MUY ALTA → el broker pierde la cabeza (de la mejor manera)
 """
 from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
-    from signals import ConfluenceSignal, Signal
+    from scorer import TierScore
+    from signals import Signal
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
-DISCLAIMER = "_Idea para investigar basada en datos públicos de SEC EDGAR y divulgaciones del Congreso\\. No es recomendación de inversión\\._"
+DISCLAIMER = (
+    "_Idea para investigar basada en datos públicos \\(SEC EDGAR, divulgaciones del Congreso\\)\\. "
+    "No es recomendación de inversión\\._"
+)
 
-_MDV2_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+_MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+def _e(t: str) -> str:
+    return _MDV2.sub(r"\\\1", str(t))
+
+def _usd(v: float) -> str:
+    return _e(f"${v:,.0f}")
+
+def _shares(v: float) -> str:
+    return _e(f"{v:,.0f}")
 
 
-def _esc(text: str) -> str:
-    return _MDV2_SPECIAL.sub(r"\\\1", str(text))
+# ── Tier headers ───────────────────────────────────────────────────────────────
+
+_HEADERS = {
+    "BAJA": (
+        "Actividad de insider registrada",
+        "SEÑAL: BAJA",
+    ),
+    "MEDIA": (
+        "Actividad interesante detectada",
+        "SEÑAL: MEDIA",
+    ),
+    "ALTA": (
+        "El dinero listo se esta moviendo",
+        "SEÑAL FUERTE",
+    ),
+    "MUY ALTA": (
+        "CONFLUENCIA TOTAL — MAXIMO NIVEL",
+        "ALERTA MAXIMA",
+    ),
+}
+
+_SCORE_BAR = {
+    "BAJA":     "▓░░░░",
+    "MEDIA":    "▓▓▓░░",
+    "ALTA":     "▓▓▓▓░",
+    "MUY ALTA": "▓▓▓▓▓",
+}
 
 
-def _fmt_usd(value: float) -> str:
-    return _esc(f"${value:,.0f}")
+# ── Main: send_tier_score ──────────────────────────────────────────────────────
+
+def send_tier_score(
+    ts: "TierScore",
+    brief: str,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    """Send a fully-scored TierScore message to Telegram."""
+    message = _build_tier_message(ts, brief)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"{ts.tier} {ts.ticker} score={ts.total_score:.0f}")
 
 
-def _fmt_shares(shares: float) -> str:
-    return _esc(f"{shares:,.0f}")
-
-
-# ── Single insider signal ──────────────────────────────────────────────────────
-
-def _build_signal_message(signal: "Signal", brief: str) -> str:
-    txn = signal.transaction
-    cluster_tag = "  \\[CLUSTER\\]" if signal.is_cluster else ""
+def _build_tier_message(ts: "TierScore", brief: str) -> str:
+    subtitle, badge = _HEADERS.get(ts.tier, ("Señal detectada", "SEÑAL"))
+    bar = _SCORE_BAR.get(ts.tier, "▓░░░░")
+    score_line = f"{bar} *{_e(ts.tier)}* \\| Score: *{_e(str(int(ts.total_score)))}* pts"
 
     lines = [
-        f"*{_esc(txn.ticker)}* — Compra Insider{cluster_tag}",
+        f"*{_e(ts.ticker)}* — {_e(subtitle)}",
+        score_line,
         "",
-        f"*Insider:* {_esc(txn.owner_name)} \\({_esc(', '.join(txn.role_labels))}\\)",
-        f"*Monto:* {_fmt_usd(txn.value)}  \\({_fmt_shares(txn.shares)} acc × {_esc(f'${txn.price:,.2f}')}\\)",
-        f"*Fecha:* {_esc(txn.transaction_date)}",
-        f"*Tenencia post:* {_fmt_shares(txn.shares_owned_following)} acc",
     ]
-    if signal.is_cluster:
-        lines.append(f"*Cluster:* {_esc(str(signal.cluster_size))} insiders distintos en 7 días")
 
-    filing_url = txn.filing_url or f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&CIK={txn.ticker}"
-    lines += [
-        "",
-        _esc(brief),
-        "",
-        f"[{_esc('Ver filing en EDGAR')}]({filing_url})",
-        "",
-        DISCLAIMER,
-    ]
+    # ── Insiders ───────────────────────────────────────────────────────────
+    if ts.insider_signals:
+        n = len(ts.insider_signals)
+        distinct = len({s.transaction.owner_name for s in ts.insider_signals})
+        lines.append(f"*Insiders \\({_e(str(distinct))}\\):*")
+        for sig in ts.insider_signals[:4]:
+            t = sig.transaction
+            roles = ", ".join(t.role_labels)
+            lines.append(
+                f"  • {_e(t.owner_name)} \\({_e(roles)}\\) "
+                f"→ {_usd(t.value)} el {_e(t.transaction_date)}"
+            )
+        if n > 4:
+            lines.append(f"  \\+{_e(str(n-4))} más")
+
+    # ── Politicians ────────────────────────────────────────────────────────
+    if ts.politician_trades:
+        seen: set = set()
+        unique_pols = []
+        for p in ts.politician_trades:
+            if p.politician_name not in seen:
+                seen.add(p.politician_name)
+                unique_pols.append(p)
+        lines.append(f"\n*Políticos \\({_e(str(len(unique_pols)))}\\):*")
+        for p in unique_pols[:4]:
+            amt = f" ~ {_e(p.amount_range)}" if p.amount_range else ""
+            dt = f" el {_e(p.transaction_date)}" if p.transaction_date else ""
+            lines.append(f"  • {_e(p.label)}{amt}{dt}")
+
+    # ── Activists ──────────────────────────────────────────────────────────
+    if ts.activist_filings:
+        lines.append(f"\n*Activistas \\(13D/13G\\):*")
+        for a in ts.activist_filings[:3]:
+            stake = f"{a.stake_pct:.1f}%" if a.stake_pct else "≥5%"
+            lines.append(
+                f"  • {_e(a.filer_name)} \\({_e(a.filing_type)}\\) "
+                f"→ {_e(stake)} stake el {_e(a.filing_date)}"
+            )
+
+    # ── Institutional ──────────────────────────────────────────────────────
+    if ts.institutional_positions:
+        lines.append(f"\n*Institucionales \\(13F\\):*")
+        for ip in ts.institutional_positions[:3]:
+            lines.append(
+                f"  • {_e(ip.fund_name)} → nueva posición {_usd(ip.value_usd)}"
+            )
+
+    # ── Short interest ─────────────────────────────────────────────────────
+    if ts.short_interest and ts.short_interest.decline_pct >= 10:
+        si = ts.short_interest
+        lines.append(
+            f"\n*Short Interest:* cayó {_e(f'{si.decline_pct:.0f}%')} "
+            f"\\(ahora {_e(f'{si.current_pct:.1f}%')} del float\\)"
+        )
+
+    # ── Unusual options ────────────────────────────────────────────────────
+    if ts.unusual_options:
+        opt = ts.unusual_options[0]
+        lines.append(
+            f"\n*Opciones inusuales:* {_e(opt.option_type)} "
+            f"strike {_e(str(opt.strike))} exp {_e(opt.expiration)} "
+            f"\\| Vol/OI: *{_e(f'{opt.volume_oi_ratio:.1f}')}x*"
+        )
+
+    # ── Score breakdown ────────────────────────────────────────────────────
+    n_sources = len(ts.active_source_types)
+    lines.append(
+        f"\n*{_e(str(n_sources))} fuente{'s' if n_sources != 1 else ''} independiente{'s' if n_sources != 1 else ''}* confirmando"
+    )
+
+    # ── Brief ──────────────────────────────────────────────────────────────
+    lines.append(f"\n{_e(brief)}")
+
+    # ── Link ───────────────────────────────────────────────────────────────
+    primary = ts.insider_signals[0].transaction if ts.insider_signals else None
+    if primary and primary.filing_url:
+        lines.append(f"\n[{_e('Ver en SEC EDGAR')}]({primary.filing_url})")
+
+    lines.append(f"\n{DISCLAIMER}")
     return "\n".join(lines)
 
+
+# ── Legacy: single signal (for backward compat) ───────────────────────────────
 
 def send_signal(
     signal: "Signal",
@@ -74,129 +185,63 @@ def send_signal(
     chat_id: str,
     dry_run: bool = False,
 ) -> None:
-    message = _build_signal_message(signal, brief)
-    _send(message, bot_token, chat_id, dry_run,
-          label=f"Signal {signal.transaction.ticker}")
-
-
-# ── Confluence signal ──────────────────────────────────────────────────────────
-
-def _confidence_header(confidence: str) -> str:
-    mapping = {
-        "MUY ALTA": "CONFLUENCIA — PROBABILIDAD MUY ALTA",
-        "ALTA":     "CONFLUENCIA — PROBABILIDAD ALTA",
-        "MEDIA":    "CONFLUENCIA — CLUSTER DE INSIDERS",
-    }
-    return mapping.get(confidence, f"CONFLUENCIA — {confidence}")
-
-
-def _build_confluence_message(csig: "ConfluenceSignal", brief: str) -> str:
-    header = _confidence_header(csig.confidence)
+    txn = signal.transaction
+    cluster_tag = "  \\[CLUSTER\\]" if signal.is_cluster else ""
+    cluster_tag2 = "  \\+cluster bonus" if signal.is_cluster else ""
 
     lines = [
-        f"*{_esc(csig.ticker)}* — {_esc(header)}",
+        f"*{_e(txn.ticker)}* — Compra Insider{cluster_tag}",
+        f"▓░░░░ *BAJA/MEDIA* \\| sin score completo",
         "",
+        f"*Insider:* {_e(txn.owner_name)} \\({_e(', '.join(txn.role_labels))}\\)",
+        f"*Monto:* {_usd(txn.value)}  \\({_shares(txn.shares)} acc × {_e(f'${txn.price:,.2f}')}\\)",
+        f"*Fecha:* {_e(txn.transaction_date)}",
+        f"*Tenencia post:* {_shares(txn.shares_owned_following)} acc",
+        "",
+        _e(brief),
     ]
+    if txn.filing_url:
+        lines.append(f"\n[{_e('Ver en SEC EDGAR')}]({txn.filing_url})")
+    lines.append(f"\n{DISCLAIMER}")
 
-    # Insiders section
-    lines.append(f"*Insiders \\({_esc(str(csig.distinct_insiders))}\\):*")
-    for sig in csig.insider_signals[:5]:   # cap at 5 to avoid huge messages
-        txn = sig.transaction
-        roles = ", ".join(txn.role_labels)
-        lines.append(
-            f"  • {_esc(txn.owner_name)} \\({_esc(roles)}\\) "
-            f"compró {_fmt_usd(txn.value)} el {_esc(txn.transaction_date)}"
-        )
-    if len(csig.insider_signals) > 5:
-        lines.append(f"  \\.\\.\\. y {_esc(str(len(csig.insider_signals) - 5))} más")
-
-    lines.append("")
-
-    # Politicians section
-    if csig.politician_trades:
-        lines.append(f"*Políticos \\({_esc(str(csig.distinct_politicians))}\\):*")
-        seen_pols: set = set()
-        for pt in csig.politician_trades[:5]:
-            if pt.politician_name in seen_pols:
-                continue
-            seen_pols.add(pt.politician_name)
-            amount = f" ~ {_esc(pt.amount_range)}" if pt.amount_range else ""
-            date_str = f" el {_esc(pt.transaction_date)}" if pt.transaction_date else ""
-            lines.append(
-                f"  • {_esc(pt.label)} compró{amount}{date_str}"
-            )
-        if csig.distinct_politicians > 5:
-            lines.append(f"  \\.\\.\\. y {_esc(str(csig.distinct_politicians - 5))} más")
-        lines.append("")
-
-    # Summary line
-    total_buyers = csig.distinct_insiders + csig.distinct_politicians
-    lines.append(
-        f"*{_esc(str(total_buyers))} compradores en ventana de "
-        f"{_esc(str(csig.window_days))} días*"
-    )
-    lines.append("")
-
-    # Brief from LLM
-    lines.append(_esc(brief))
-    lines.append("")
-
-    # Links
-    primary = csig.primary_signal.transaction
-    edgar_url = primary.filing_url or (
-        f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&CIK={csig.ticker}"
-    )
-    links = [f"[{_esc('EDGAR')}]({edgar_url})"]
-    if csig.politician_trades and csig.politician_trades[0].filing_url:
-        links.append(f"[{_esc('Divulgación Congreso')}]({csig.politician_trades[0].filing_url})")
-    lines.append("  ".join(links))
-    lines.append("")
-    lines.append(DISCLAIMER)
-
-    return "\n".join(lines)
+    _send("\n".join(lines), bot_token, chat_id, dry_run,
+          label=f"Signal {txn.ticker}")
 
 
-def send_confluence(
-    csig: "ConfluenceSignal",
-    brief: str,
-    bot_token: str,
-    chat_id: str,
-    dry_run: bool = False,
-) -> None:
-    message = _build_confluence_message(csig, brief)
-    _send(message, bot_token, chat_id, dry_run,
-          label=f"Confluence {csig.ticker} [{csig.confidence}]")
+# ── Legacy: confluence (for backward compat) ──────────────────────────────────
+
+def send_confluence(csig, brief: str, bot_token: str, chat_id: str, dry_run: bool = False) -> None:
+    """Route to send_signal using primary signal."""
+    if csig.insider_signals:
+        send_signal(csig.primary_signal, brief, bot_token, chat_id, dry_run)
 
 
 # ── Transport ──────────────────────────────────────────────────────────────────
 
-def _send(
-    message: str,
-    bot_token: str,
-    chat_id: str,
-    dry_run: bool,
-    label: str = "",
-) -> None:
+def _send(message: str, bot_token: str, chat_id: str, dry_run: bool, label: str = "") -> None:
     if dry_run:
-        print("\n" + "=" * 60)
+        sep = "=" * 60
+        print(f"\n{sep}")
         print(f"[DRY RUN] {label}")
         print(message)
-        print("=" * 60)
+        print(sep)
         return
 
     if not bot_token or not chat_id:
-        logger.warning("TELEGRAM credentials not set; skipping %s.", label)
+        logger.warning("Telegram credentials not set; skipping %s.", label)
         return
 
-    url = TELEGRAM_API.format(token=bot_token)
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "MarkdownV2",
-        "disable_web_page_preview": True,
-    }
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(
+            TELEGRAM_API.format(token=bot_token),
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "MarkdownV2",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
         resp.raise_for_status()
     except Exception as exc:
-        logger.error("Telegram send failed for %s: %s", label, exc)
+        logger.error("Telegram send failed (%s): %s", label, exc)
