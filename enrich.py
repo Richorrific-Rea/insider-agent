@@ -42,48 +42,45 @@ logger = logging.getLogger(__name__)
 #
 # Regla de oro: NUNCA recomendar comprar/vender ni predecir precios.
 
-_REGLAS_COMUNES = """\
+_SISTEMA_BASE = """\
+Eres un broker de Wall Street de los años 80 inspirado en Jordan Belfort. \
+Tu trabajo es escribir análisis cortos de señales de insiders en español.
 
-REGLAS CRÍTICAS (violarlas arruina el mensaje):
-- RESPONDE ÚNICAMENTE EN ESPAÑOL. Sin inglés, sin Spanglish.
-- TEXTO PLANO SOLAMENTE. Cero asteriscos, cero negritas, cero markdown, \
-  cero guiones de lista, cero numeración. Solo texto corrido.
-- Cada frase DEBE terminar con punto o signo de exclamación.
+FORMATO OBLIGATORIO — tu respuesta debe verse EXACTAMENTE así (solo texto, \
+sin asteriscos, sin markdown, sin comillas, sin listas):
+
+Ejemplo de respuesta correcta:
+"Immunovant desarrolla anticuerpos para enfermedades autoinmunes, un sector que cotiza con prima cuando los datos clínicos sorprenden al alza. El CFO apostó $159k de su propio bolsillo, y cuando el dinero viene de adentro, el mercado escucha."
+
+Ejemplo de respuesta INCORRECTA (nunca hagas esto):
+"**Immunovant** develops... * Note: the company... 1. First... (This is wrong because..."
+
+REGLAS ABSOLUTAS:
+- Solo español. Cero inglés.
+- Cero asteriscos, cero markdown, cero comentarios sobre tu propio texto.
+- Usa cifras con símbolo: $159k, $443k — nunca escribas números en palabras.
+- 2 a 3 frases máximo. Cada una termina con punto o signo de exclamación.
 - PROHIBIDO recomendar comprar/vender o predecir precios."""
 
-_PROMPT_BAJA = """\
-Eres un analista financiero. Escribe 2 frases cortas y COMPLETAS en español.
-Frase 1: qué hace la empresa (máx 12 palabras).
-Frase 2: los hechos del insider (quién, cuánto, cuándo).
-""" + _REGLAS_COMUNES
+_PROMPT_BAJA = _SISTEMA_BASE + """
 
-_PROMPT_MEDIA = """\
-Eres Jordan Belfort en sus primeros años en Wall Street. Escribe 3 frases \
-CORTAS y COMPLETAS en español — pitch de ascensor con actitud.
-Frase 1: qué hace la empresa (máx 12 palabras, directo y memorable).
-Frase 2: tu teoría del movimiento del dinero (catalizador, sector).
-Frase 3: los hechos concretos (quién compró, cuánto).
-""" + _REGLAS_COMUNES
+TONO: analista profesional y directo."""
 
-_PROMPT_ALTA = """\
-Eres Jordan Belfort en Stratton Oakmont. Escribe 3 frases CORTAS y COMPLETAS \
-en español con energía de mañana de trading.
-Frase 1: qué hace la empresa — explosiva, memorable (máx 12 palabras).
-Frase 2: tu teoría de por qué los suits están comprando (FDA, M&A, ciclo).
-Frase 3: los hechos con actitud — cuántos insiders, cuánto total.
-Puedes incluir UNA frase corta de la película de El Lobo de Wall Street si encaja.
-""" + _REGLAS_COMUNES
+_PROMPT_MEDIA = _SISTEMA_BASE + """
 
-_PROMPT_MUY_ALTA = """\
-Eres Jordan Belfort en el pico de su carrera. Escribe 4 frases CORTAS y \
-COMPLETAS en español — discurso del año pero TELEGRÁFICO.
-Frase 1: qué hace la empresa — tan buena que la recuerdan (máx 12 palabras).
-Frase 2: tu teoría de convicción — qué saben los que compraron.
-Frase 3: los hechos — cuántos insiders, cuánto en total, qué roles.
-Frase 4: cierre con la energía del discurso del ferry. Sin recomendar nada.
-Incluye exactamente UNA de estas frases si encaja:
-"El nombre del juego es mover el dinero." o "Act as if." o "¡No me voy!"
-""" + _REGLAS_COMUNES
+TONO: Jordan Belfort en sus primeros años — energético pero conciso. \
+Una frase sobre la empresa, una sobre el movimiento del dinero, una con los hechos."""
+
+_PROMPT_ALTA = _SISTEMA_BASE + """
+
+TONO: Stratton Oakmont por la mañana — directo como un pitch, con convicción. \
+Puedes usar UNA frase icónica de El Lobo de Wall Street si encaja naturalmente."""
+
+_PROMPT_MUY_ALTA = _SISTEMA_BASE + """
+
+TONO: Jordan Belfort en su pico — máxima energía, máxima convicción, \
+frases telegráficas. USA exactamente una de estas si encaja: \
+"El nombre del juego es mover el dinero." / "Act as if." / "¡No me voy!\""""
 
 _PROMPTS = {
     "BAJA":     _PROMPT_BAJA,
@@ -93,6 +90,45 @@ _PROMPTS = {
 }
 
 # ── Plain-text fallbacks ───────────────────────────────────────────────────────
+
+import re as _re
+
+def _clean_llm_output(text: str) -> str:
+    """
+    Post-process LLM output to remove common Gemini artifacts:
+    - Markdown (asterisks, bold, headers)
+    - English meta-commentary lines
+    - Self-corrections ("Note:", "This is incorrect", etc.)
+    - Leading/trailing quotes
+    """
+    # Remove markdown bold/italic
+    text = _re.sub(r'\*+([^*]+)\*+', r'\1', text)
+    # Remove markdown headers
+    text = _re.sub(r'^#+\s+', '', text, flags=_re.MULTILINE)
+    # Remove bullet points
+    text = _re.sub(r'^\s*[-•*]\s+', '', text, flags=_re.MULTILINE)
+    # Remove numbered lists
+    text = _re.sub(r'^\s*\d+\.\s+', '', text, flags=_re.MULTILINE)
+    # Remove lines that are clearly English meta-commentary
+    english_patterns = [
+        r'(?i)^\s*(note|this|here|example|incorrect|correction|actually|wait|sorry)',
+        r'(?i)grammatically',
+        r'(?i)what about',
+        r'(?i)should be',
+    ]
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        if any(_re.search(p, line) for p in english_patterns):
+            continue
+        clean_lines.append(line)
+    text = '\n'.join(clean_lines)
+    # Remove surrounding quotes
+    text = text.strip().strip('"').strip("'").strip()
+    # Collapse multiple spaces/newlines
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 
 def _fallback_tier(ts: "TierScore") -> str:
     n_insiders = len(ts.insider_signals)
@@ -172,7 +208,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return resp.content[0].text.strip()
+        return _clean_llm_output(resp.content[0].text)
 
     # ── OpenAI-compatible (openai, groq, gemini, ollama, custom) ──────────
     import openai as _oai
@@ -201,7 +237,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
             {"role": "user",   "content": user},
         ],
     )
-    return resp.choices[0].message.content.strip()
+    return _clean_llm_output(resp.choices[0].message.content)
 
 
 # ── TierScore enrichment (main path) ──────────────────────────────────────────
