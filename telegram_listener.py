@@ -33,40 +33,61 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 # ── Parse prompt ──────────────────────────────────────────────────────────────
 
-_PARSE_SYSTEM = """\
-Eres el asistente de un sistema de alertas de acciones. El usuario te manda \
-mensajes en español para gestionar su portafolio. Tu trabajo es interpretar \
-el mensaje y devolver un JSON con la acción a realizar.
-
-ACCIONES POSIBLES:
-- buy: el usuario compró acciones
-- sell: el usuario vendió o quiere salir de una posición
-- watch: el usuario quiere monitorear el precio de una acción
-- unwatch: el usuario quiere dejar de monitorear
-- portfolio: quiere ver su portafolio
-- watchlist: quiere ver su watchlist
-- help: pide ayuda
-- unknown: no entiendes el mensaje
-
-FORMATO DE RESPUESTA (siempre JSON, sin explicaciones extra):
-{
-  "action": "buy|sell|watch|unwatch|portfolio|watchlist|help|unknown",
-  "ticker": "SIMBOLO_EN_MAYUSCULAS_o_null",
-  "shares": numero_o_null,
-  "price": numero_o_null,
-  "missing": ["shares", "price"],  // campos que faltan para completar la acción
-  "message": "respuesta corta y conversacional para el usuario en español"
+_LANGUAGE_INSTRUCTIONS = {
+    "auto": (
+        "IMPORTANT: Detect the language the user is writing in and respond "
+        "in that same language. If they write in Spanish, respond in Spanish. "
+        "If they write in English, respond in English. Match their tone and style."
+    ),
+    "es": "Always respond in Spanish (español), regardless of what language the user writes in.",
+    "en": "Always respond in English, regardless of what language the user writes in.",
+    "fr": "Always respond in French (français), regardless of what language the user writes in.",
+    "pt": "Always respond in Portuguese (português), regardless of what language the user writes in.",
+    "de": "Always respond in German (Deutsch), regardless of what language the user writes in.",
 }
 
-REGLAS:
-- Mapea nombres de empresas a tickers: Apple→AAPL, Nvidia→NVDA, Tesla→TSLA, etc.
-- Si el usuario dice "la de Elon" → TSLA, "la de los chips" → NVDA, etc.
-- Si falta información (shares o price para buy), ponla en "missing" y pide solo \
-  lo que falta en "message".
-- "message" debe ser corto, conversacional, como un WhatsApp. Sin formalidades.
-- Para buy/sell sin ticker claro, devuelve ticker: null y pide aclaración.
-- NUNCA des consejos de inversión ni opiniones sobre si comprar/vender algo.
+_PARSE_SYSTEM_TEMPLATE = """\
+You are the assistant for a stock alert system. The user sends messages \
+to manage their portfolio. Your job is to interpret the message and return \
+a JSON with the action to perform.
+
+{language_instruction}
+
+POSSIBLE ACTIONS:
+- buy: user bought shares
+- sell: user sold or wants to exit a position
+- watch: user wants to monitor a stock price
+- unwatch: user wants to stop monitoring
+- portfolio: wants to see their portfolio
+- watchlist: wants to see their watchlist
+- help: asks for help
+- unknown: you don't understand the message
+
+RESPONSE FORMAT (always JSON, no extra text):
+{{
+  "action": "buy|sell|watch|unwatch|portfolio|watchlist|help|unknown",
+  "ticker": "SYMBOL_IN_UPPERCASE_or_null",
+  "shares": number_or_null,
+  "price": number_or_null,
+  "missing": ["shares", "price"],
+  "message": "short conversational reply to the user"
+}}
+
+RULES:
+- Map company names to tickers: Apple→AAPL, Nvidia→NVDA, Tesla→TSLA, Google/Alphabet→GOOGL, etc.
+- Understand nicknames: "Elon's company" → TSLA, "the chip one" / "la de los chips" → NVDA, etc.
+- If info is missing (shares or price for buy), put it in "missing" and ask only for what's needed.
+- "message" must be short and conversational — like a WhatsApp message, no formalities.
+- For buy/sell without a clear ticker, return ticker: null and ask for clarification.
+- NEVER give investment advice or opinions about whether to buy/sell anything.
 """
+
+
+def _build_parse_system(cfg) -> str:
+    """Build the parse system prompt with the configured language instruction."""
+    lang = getattr(cfg, "bot_language", "auto").lower()
+    instruction = _LANGUAGE_INSTRUCTIONS.get(lang, _LANGUAGE_INSTRUCTIONS["auto"])
+    return _PARSE_SYSTEM_TEMPLATE.format(language_instruction=instruction)
 
 # ── Telegram API helpers ──────────────────────────────────────────────────────
 
@@ -99,7 +120,8 @@ def _parse_message(text: str, cfg) -> dict:
     """
     try:
         from enrich import _call_llm
-        raw = _call_llm(_PARSE_SYSTEM, text, cfg)
+        system = _build_parse_system(cfg)
+        raw = _call_llm(system, text, cfg)
         # Extract JSON from response (LLM sometimes adds markdown fences)
         raw = raw.strip()
         if raw.startswith("```"):
