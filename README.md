@@ -1,8 +1,8 @@
 # insider-agent
 
-A signal pipeline + Telegram bot that monitors **7 independent data sources**, cross-references them into a confidence score, and fires alerts written like messages from a slightly unhinged 80s Wall Street broker.
+A signal pipeline + Telegram bot that monitors **7 independent data sources** plus **financial news**, cross-references them into a confidence score, and fires alerts written by a character somewhere between Jordan Belfort and Gordon Gekko.
 
-It watches what corporate insiders, politicians, activist investors, institutional funds, short sellers, and options traders are doing. When multiple independent actors make the same bet on the same stock, it tells you — and explains what the company does and why they might be moving.
+It watches what corporate insiders, politicians, activist investors, institutional funds, short sellers, and options traders are doing. **Any combination of signals with a high enough score fires an alert** — no Form 4 required. Financial news triggers a 5-day scan window so stocks in the news get automatically monitored for market signals.
 
 You can also **talk to it on Telegram** in plain Spanish: tell it what you bought, ask for your portfolio, and it will alert you when exit signals appear.
 
@@ -14,15 +14,18 @@ You can also **talk to it on Telegram** in plain Spanish: tell it what you bough
 
 | Source | Data | Where it comes from |
 |---|---|---|
-| **SEC Form 4** | Corporate insider purchases (CEOs, CFOs, Directors) | SEC EDGAR — free, official |
+| **SEC Form 4** | Corporate insider purchases (CEOs, CFOs, Directors) | SEC EDGAR — free |
 | **Congressional PTR** | Senate and House trading disclosures | Senate EFTS + House eFD — free |
 | **13D / 13G** | Activist investors crossing ≥5% stake | SEC EDGAR — free |
 | **13F** | Institutional funds opening new positions (>$100M AUM) | SEC EDGAR — free |
 | **Short interest** | Short sellers covering / increasing positions | Yahoo Finance — free |
 | **Unusual options** | Abnormal call/put volume vs open interest | Yahoo Finance — free |
-| **Price spikes** | Stocks moving significantly with volume confirmation | Yahoo Finance — free |
+| **Price spikes / drops** | Stocks moving significantly | Yahoo Finance — free |
+| **Financial news** | Yahoo Finance, Reuters, MarketWatch, Seeking Alpha RSS | Free RSS feeds |
 
 Everything is free. No paid data feeds required.
+
+**Any signal combination with a score ≥ 40 (MEDIA tier) fires an alert** — even without a Form 4 anchor. Short interest declining + unusual calls alone can trigger. Financial news mentions add tickers to a 5-day scan window automatically.
 
 ---
 
@@ -58,18 +61,25 @@ Multipliers apply for trade size ($100k–$5M+), recency (0–30 days), and acti
 
 ---
 
-## The broker
+## The broker — Wolf of Wall Street meets Gordon Gekko
 
-The LLM analysis scales with signal strength. At low tiers it's a calm analyst. At **MUY ALTA** it's a fully unhinged 80s Wall Street broker who hasn't slept in two days.
+The LLM analysis scales with signal strength. At low tiers it's a calm analyst. At **MUY ALTA** it's Jordan Belfort at his peak — Stratton Oakmont in full swing, giving the speech of his life.
 
 Every analysis includes:
 1. **What the company does** — one sentence, no corporate jargon
-2. **A theory** about why insiders might be moving — upcoming trial, M&A rumors, sector shift, regulatory event
+2. **A theory** — why are insiders moving? M&A rumors, FDA readout, sector cycle, contract win
 3. **The facts** — who bought, how much, when
-4. **The personality** — calibrated to signal strength
+4. **The personality** — calibrated to signal strength, with actual movie quotes when they fit
+
+| Tier | Character | Energy |
+|---|---|---|
+| BAJA | Sober analyst, Gekko reference if it fits | Informative |
+| MEDIA | Young Belfort, natural hunger | "Act as if", Stratton energy |
+| ALTA | Belfort at his peak, morning speech | "¡Stratton Oakmont!", "Greed is good" |
+| MUY ALTA | Belfort on the ferry | "¡No me voy!", "ALGO SABEN", "el 87 no terminó bien" |
 
 Example at **MUY ALTA**:
-> *"Immunovant makes monoclonal antibodies for autoimmune diseases — BIOTECH IN THE EYE OF THE HOTTEST SECTOR IN THE MARKET. My theory: Phase 3 readout coming and the people on the inside KNOW what it says. CFO, senior exec and director put $443k of their OWN MONEY in on the same day — in 15 years on the floor I NEVER saw three suits coordinate like this without a reason. This is a MONSTER. GREED IS GOOD baby, and today these executives are proving it with their wallets."*
+> *"Immunovant hace anticuerpos para autoinmunes — BIOTECH EN EL CENTRO DEL SECTOR MÁS CALIENTE DEL MERCADO. Mi teoría: hay un readout de Phase 3 que los que están adentro ya leyeron. '¡No me voy, no me voy!' — cuando el CFO, un ejecutivo senior Y un director meten $443k EL MISMO DÍA, el nombre del juego es claro: mover el dinero. Act as if esto fuera la señal del año. Porque LO ES. Esto no es asesoramiento — esto es lo que VEO."*
 
 Supports any LLM provider — **Groq and Gemini are free**:
 
@@ -411,7 +421,8 @@ Full guide: [DEPLOY.md](DEPLOY.md)
 | `sec_extra_client.py` | EDGAR 13D / 13G / 13F fetching and parsing |
 | `finra_client.py` | Short interest via Yahoo Finance |
 | `options_client.py` | Unusual options via Yahoo Finance options chain |
-| `price_client.py` | Price snapshots + spike detection via Yahoo Finance |
+| `price_client.py` | Price snapshots + spike/drop detection via Yahoo Finance |
+| `news_client.py` | RSS fetcher (Yahoo/Reuters/MarketWatch/SeekingAlpha) + LLM ticker extraction |
 | `signals.py` | Hard filters + insider cluster detection |
 | `scorer.py` | Multi-source scoring engine → `TierScore` |
 | `enrich.py` | LLM analysis with 80s broker personality (multi-provider) |
