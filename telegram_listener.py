@@ -33,17 +33,21 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 # ── Parse prompt ──────────────────────────────────────────────────────────────
 
+# Language codes → display names (for confirmation messages)
+_LANGUAGE_NAMES = {
+    "es": "español",
+    "en": "English",
+    "fr": "français",
+    "pt": "português",
+    "de": "Deutsch",
+}
+
 _LANGUAGE_INSTRUCTIONS = {
-    "auto": (
-        "IMPORTANT: Detect the language the user is writing in and respond "
-        "in that same language. If they write in Spanish, respond in Spanish. "
-        "If they write in English, respond in English. Match their tone and style."
-    ),
-    "es": "Always respond in Spanish (español), regardless of what language the user writes in.",
+    "es": "Responde SIEMPRE en español, sin importar en qué idioma te escriba el usuario.",
     "en": "Always respond in English, regardless of what language the user writes in.",
-    "fr": "Always respond in French (français), regardless of what language the user writes in.",
-    "pt": "Always respond in Portuguese (português), regardless of what language the user writes in.",
-    "de": "Always respond in German (Deutsch), regardless of what language the user writes in.",
+    "fr": "Réponds TOUJOURS en français, quelle que soit la langue utilisée par l'utilisateur.",
+    "pt": "Responda SEMPRE em português, independentemente do idioma que o usuário usar.",
+    "de": "Antworte IMMER auf Deutsch, unabhängig davon, in welcher Sprache der Benutzer schreibt.",
 }
 
 _PARSE_SYSTEM_TEMPLATE = """\
@@ -60,33 +64,37 @@ POSSIBLE ACTIONS:
 - unwatch: user wants to stop monitoring
 - portfolio: wants to see their portfolio
 - watchlist: wants to see their watchlist
+- language: user is asking to change the language of the bot
 - help: asks for help
 - unknown: you don't understand the message
 
 RESPONSE FORMAT (always JSON, no extra text):
 {{
-  "action": "buy|sell|watch|unwatch|portfolio|watchlist|help|unknown",
+  "action": "buy|sell|watch|unwatch|portfolio|watchlist|language|help|unknown",
   "ticker": "SYMBOL_IN_UPPERCASE_or_null",
   "shares": number_or_null,
   "price": number_or_null,
   "missing": ["shares", "price"],
+  "language": "es|en|fr|pt|de|null",
   "message": "short conversational reply to the user"
 }}
 
 RULES:
 - Map company names to tickers: Apple→AAPL, Nvidia→NVDA, Tesla→TSLA, Google/Alphabet→GOOGL, etc.
-- Understand nicknames: "Elon's company" → TSLA, "the chip one" / "la de los chips" → NVDA, etc.
+- Understand nicknames: "Elon's company"→TSLA, "la de los chips"→NVDA, "la de los iPhones"→AAPL.
 - If info is missing (shares or price for buy), put it in "missing" and ask only for what's needed.
 - "message" must be short and conversational — like a WhatsApp message, no formalities.
 - For buy/sell without a clear ticker, return ticker: null and ask for clarification.
 - NEVER give investment advice or opinions about whether to buy/sell anything.
+- For "language" action: detect which language the user wants and put it in the "language" field.
+  Examples: "habla en inglés"→en, "speak Spanish"→es, "parle français"→fr,
+  "habla español"→es, "en inglés por favor"→en.
 """
 
 
-def _build_parse_system(cfg) -> str:
-    """Build the parse system prompt with the configured language instruction."""
-    lang = getattr(cfg, "bot_language", "auto").lower()
-    instruction = _LANGUAGE_INSTRUCTIONS.get(lang, _LANGUAGE_INSTRUCTIONS["auto"])
+def _build_parse_system(lang: str) -> str:
+    """Build the parse system prompt with the given language instruction."""
+    instruction = _LANGUAGE_INSTRUCTIONS.get(lang, _LANGUAGE_INSTRUCTIONS["es"])
     return _PARSE_SYSTEM_TEMPLATE.format(language_instruction=instruction)
 
 # ── Telegram API helpers ──────────────────────────────────────────────────────
@@ -113,14 +121,14 @@ def _get_updates(token: str, offset: int) -> list:
 
 # ── LLM parsing ───────────────────────────────────────────────────────────────
 
-def _parse_message(text: str, cfg) -> dict:
+def _parse_message(text: str, cfg, current_lang: str = "es") -> dict:
     """
     Sends user message to LLM and returns parsed intent as a dict.
     Falls back to {"action": "unknown"} on any error.
     """
     try:
         from enrich import _call_llm
-        system = _build_parse_system(cfg)
+        system = _build_parse_system(current_lang)
         raw = _call_llm(system, text, cfg)
         # Extract JSON from response (LLM sometimes adds markdown fences)
         raw = raw.strip()
@@ -242,40 +250,80 @@ def _handle_watchlist(chat_id: str, token: str, cfg) -> None:
     _send(token, chat_id, f"Watchlist: {', '.join(wl)}\nAlerta cuando suban ≥7% en un día.")
 
 
-def _handle_help(chat_id: str, token: str) -> None:
-    msg = (
-        "Qué puedo hacer:\n\n"
-        "• \"compré 50 de Apple a 185\" → agrega al portafolio\n"
-        "• \"vendí Tesla\" → quita del portafolio\n"
-        "• \"vigila Nvidia\" → agrega a watchlist\n"
-        "• \"portafolio\" → ver tus posiciones\n"
-        "• \"watchlist\" → ver lo que monitoreas\n\n"
-        "Puedes escribir como quieras, entiendo lenguaje natural."
-    )
-    _send(token, chat_id, msg)
+def _handle_help(chat_id: str, token: str, lang: str = "es") -> None:
+    msgs = {
+        "es": (
+            "Qué puedo hacer:\n\n"
+            "• \"compré 50 de Apple a 185\" → agrega al portafolio\n"
+            "• \"vendí Tesla\" → quita del portafolio\n"
+            "• \"vigila Nvidia\" → agrega a watchlist\n"
+            "• \"portafolio\" → ver tus posiciones\n"
+            "• \"watchlist\" → ver lo que monitoreas\n"
+            "• \"habla en inglés\" → cambiar idioma\n\n"
+            "Escribe como quieras, entiendo lenguaje natural."
+        ),
+        "en": (
+            "What I can do:\n\n"
+            "• \"I bought 50 Apple at 185\" → adds to portfolio\n"
+            "• \"I sold Tesla\" → removes from portfolio\n"
+            "• \"watch Nvidia\" → adds to watchlist\n"
+            "• \"portfolio\" → see your positions\n"
+            "• \"watchlist\" → see what you're monitoring\n"
+            "• \"speak Spanish\" → change language\n\n"
+            "Write naturally, I understand free text."
+        ),
+    }
+    _send(token, chat_id, msgs.get(lang, msgs["es"]))
+
+
+def _handle_language(parsed: dict, chat_id: str, token: str) -> Optional[str]:
+    """
+    Handles a language change request.
+    Returns the new language code, or None if not recognized.
+    """
+    new_lang = parsed.get("language")
+    if not new_lang or new_lang not in _LANGUAGE_NAMES:
+        _send(token, chat_id,
+              "No entendí qué idioma quieres. Puedes pedir: español, inglés, francés, portugués, alemán.")
+        return None
+
+    confirmations = {
+        "es": "Perfecto, a partir de ahora te hablo en español.",
+        "en": "Got it, I'll speak English from now on.",
+        "fr": "Parfait, je vais parler français à partir de maintenant.",
+        "pt": "Perfeito, vou falar português a partir de agora.",
+        "de": "Verstanden, ich spreche ab jetzt auf Deutsch.",
+    }
+    _send(token, chat_id, confirmations[new_lang])
+    logger.info("Language changed to: %s", new_lang)
+    return new_lang
 
 
 # ── Main message router ───────────────────────────────────────────────────────
 
-def _route(update: dict, token: str, cfg) -> None:
+def _route(update: dict, token: str, cfg, current_lang: str = "es") -> Optional[str]:
+    """
+    Routes an incoming Telegram update to the appropriate handler.
+    Returns the new language code if it was changed, otherwise None.
+    """
     message = update.get("message") or update.get("edited_message")
     if not message:
-        return
+        return None
 
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = (message.get("text") or "").strip()
 
     if not chat_id or not text:
-        return
+        return None
 
     # Only respond to the configured chat
     if cfg.telegram_chat_id and chat_id != str(cfg.telegram_chat_id):
         logger.debug("Message from unknown chat %s — ignoring", chat_id)
-        return
+        return None
 
-    logger.info("Incoming message from %s: %r", chat_id, text[:80])
+    logger.info("Incoming [%s]: %r", current_lang, text[:80])
 
-    parsed = _parse_message(text, cfg)
+    parsed = _parse_message(text, cfg, current_lang)
     action = parsed.get("action", "unknown")
 
     handlers = {
@@ -285,15 +333,24 @@ def _route(update: dict, token: str, cfg) -> None:
         "unwatch":   lambda: _handle_unwatch(parsed, chat_id, token, cfg),
         "portfolio": lambda: _handle_portfolio(chat_id, token, cfg),
         "watchlist": lambda: _handle_watchlist(chat_id, token, cfg),
-        "help":      lambda: _handle_help(chat_id, token),
+        "help":      lambda: _handle_help(chat_id, token, current_lang),
     }
+
+    if action == "language":
+        return _handle_language(parsed, chat_id, token)
 
     handler = handlers.get(action)
     if handler:
         handler()
     else:
-        fallback = parsed.get("message") or "No entendí eso. Escribe 'ayuda' para ver qué puedo hacer."
+        fallback = parsed.get("message") or (
+            "No entendí eso. Escribe 'ayuda' para ver qué puedo hacer."
+            if current_lang == "es" else
+            "I didn't understand that. Type 'help' to see what I can do."
+        )
         _send(token, chat_id, fallback)
+
+    return None
 
 
 # ── Polling loop ──────────────────────────────────────────────────────────────
@@ -305,10 +362,42 @@ class TelegramListener:
     """
 
     def __init__(self, cfg):
-        self._cfg   = cfg
-        self._token = cfg.telegram_bot_token
-        self._stop  = threading.Event()
+        self._cfg      = cfg
+        self._token    = cfg.telegram_bot_token
+        self._stop     = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # Language persists across messages; default from config (es)
+        self._lang     = getattr(cfg, "bot_language", "es")
+        if self._lang not in _LANGUAGE_NAMES:
+            self._lang = "es"
+        self._lang = self._load_saved_lang()
+
+    def _lang_file(self) -> str:
+        import os
+        base = getattr(self._cfg, "state_file_path", "state.json")
+        return base.replace(".json", "_lang.txt")
+
+    def _load_saved_lang(self) -> str:
+        """Load persisted language preference from disk."""
+        import os
+        path = self._lang_file()
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    saved = f.read().strip()
+                if saved in _LANGUAGE_NAMES:
+                    return saved
+            except Exception:
+                pass
+        return self._lang
+
+    def _save_lang(self, lang: str) -> None:
+        """Persist language preference to disk."""
+        try:
+            with open(self._lang_file(), "w") as f:
+                f.write(lang)
+        except Exception as exc:
+            logger.warning("Could not save language preference: %s", exc)
 
     def start(self) -> None:
         if not self._token:
@@ -316,7 +405,7 @@ class TelegramListener:
             return
         self._thread = threading.Thread(target=self._run, daemon=True, name="tg-listener")
         self._thread.start()
-        logger.info("Telegram listener started.")
+        logger.info("Telegram listener started (lang=%s).", self._lang)
 
     def stop(self) -> None:
         self._stop.set()
@@ -331,7 +420,11 @@ class TelegramListener:
                 updates = _get_updates(self._token, offset)
                 for update in updates:
                     try:
-                        _route(update, self._token, self._cfg)
+                        new_lang = _route(update, self._token, self._cfg, self._lang)
+                        if new_lang and new_lang != self._lang:
+                            self._lang = new_lang
+                            self._save_lang(new_lang)
+                            logger.info("Language switched to: %s", new_lang)
                     except Exception as exc:
                         logger.error("Error handling update: %s", exc)
                     offset = update["update_id"] + 1

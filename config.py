@@ -42,7 +42,7 @@ class Config:
     # ── Telegram ───────────────────────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
-    bot_language: str = "auto"   # "auto" | "es" | "en" | "fr" | "pt" | "de"
+    bot_language: str = "es"     # "es" (default) | "en" | "fr" | "pt" | "de"
 
     # ── Price spike detection ──────────────────────────────────────────────
     price_spike_pct: float = 5.0        # min % move up (portfolio/signal confirmation)
@@ -117,7 +117,7 @@ def load_config() -> Config:
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-        bot_language=os.getenv("BOT_LANGUAGE", "auto"),
+        bot_language=os.getenv("BOT_LANGUAGE", "es"),
         price_spike_pct=_float("PRICE_SPIKE_PCT", 5.0),
         price_volume_mult=_float("PRICE_VOLUME_MULT", 1.5),
         watchlist_spike_pct=_float("WATCHLIST_SPIKE_PCT", 7.0),
