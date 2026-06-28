@@ -168,7 +168,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
         client = _ant.Anthropic(api_key=api_key)
         resp = client.messages.create(
             model=model or cfg.anthropic_model,
-            max_tokens=900,
+            max_tokens=1500,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -195,7 +195,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
     client = _oai.OpenAI(api_key=api_key, base_url=base_url)
     resp = client.chat.completions.create(
         model=model,
-        max_tokens=900,
+        max_tokens=1500,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
