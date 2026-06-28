@@ -58,19 +58,20 @@ class PriceSnapshot:
 
     @property
     def is_spiking(self) -> bool:
-        """True if price AND volume both confirm an unusual move."""
-        return (
-            self.pct_change_vs_close >= 3.0
-            and self.volume_ratio >= 1.5
-        )
+        """True if price move is significant — volume is context, NOT a gate."""
+        return self.pct_change_vs_close >= 5.0
+
+    def is_moving(self, threshold_pct: float = 7.0) -> bool:
+        """General price move check for watchlist — only needs % change."""
+        return self.pct_change_vs_close >= threshold_pct
 
     @property
     def spike_strength(self) -> str:
-        """FUERTE / MUY_FUERTE / EXTREMO based on magnitude."""
+        """NOTABLE / FUERTE / EXTREMO based on magnitude."""
         pct = self.pct_change_vs_close
-        if pct >= 15: return "EXTREMO"
-        if pct >= 8:  return "MUY_FUERTE"
-        if pct >= 3:  return "FUERTE"
+        if pct >= 18: return "EXTREMO"
+        if pct >= 12: return "FUERTE"
+        if pct >= 7:  return "NOTABLE"
         return "NORMAL"
 
     @property

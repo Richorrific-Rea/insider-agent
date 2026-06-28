@@ -335,6 +335,65 @@ def send_price_only_alert(
           label=f"PriceSpike {ps.ticker} +{ps.pct_change_vs_close:.1f}%")
 
 
+# ── Watchlist price alert (standalone — no signal required) ───────────────────
+
+_WATCHLIST_TIER_LABELS = {
+    "EXTREMO": "MOVIMIENTO EXTREMO",
+    "FUERTE":  "Subida fuerte",
+    "NOTABLE": "Movimiento notable",
+}
+
+_WATCHLIST_BARS = {
+    "EXTREMO": "▓▓▓▓▓",
+    "FUERTE":  "▓▓▓▓░",
+    "NOTABLE": "▓▓▓░░",
+}
+
+
+def send_watchlist_alert(
+    price_snapshot,      # PriceSnapshot
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool = False,
+) -> None:
+    """
+    Pure price movement alert for a watchlist ticker.
+    No signal correlation — just: this stock is moving significantly.
+    """
+    ps = price_snapshot
+    strength = ps.spike_strength
+    label = _WATCHLIST_TIER_LABELS.get(strength, "Movimiento de precio")
+    bar   = _WATCHLIST_BARS.get(strength, "▓▓░░░")
+
+    # Volume context line (informational only, not a gate)
+    vol_ctx = ""
+    if ps.volume_ratio >= 3.0:
+        vol_ctx = f" \\| Vol *{_e(f'{ps.volume_ratio:.1f}')}x* — fuerte respaldo"
+    elif ps.volume_ratio >= 1.5:
+        vol_ctx = f" \\| Vol {_e(f'{ps.volume_ratio:.1f}')}x promedio"
+    elif ps.volume_ratio < 0.8:
+        vol_ctx = f" \\| Vol bajo — movimiento en mercado delgado"
+
+    lines = [
+        f"*{_e(ps.ticker)}* — {_e(label)}",
+        f"{bar} *\\+{_e(f'{ps.pct_change_vs_close:.1f}')}%* hoy{vol_ctx}",
+        "",
+        f"*Precio:* ${_e(f'{ps.current_price:.2f}')}",
+        f"*Apertura:* ${_e(f'{ps.open_price:.2f}')} \\| "
+        f"*Máx:* ${_e(f'{ps.day_high:.2f}')} \\| "
+        f"*Mín:* ${_e(f'{ps.day_low:.2f}')}",
+        f"*Cambio vs apertura:* {_e(f'{ps.pct_change_vs_open:+.1f}')}%",
+        "",
+        _e("En tu watchlist. Sin señal de insiders/políticos activa en este ciclo."),
+        "",
+        _e(_DISCLAIMER_RAW),
+    ]
+
+    message = "\n".join(lines)
+    _send(message, bot_token, chat_id, dry_run,
+          label=f"Watchlist {ps.ticker} +{ps.pct_change_vs_close:.1f}% [{strength}]")
+
+
 # ── Legacy: single signal (for backward compat) ───────────────────────────────
 
 def send_signal(

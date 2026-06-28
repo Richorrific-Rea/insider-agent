@@ -46,6 +46,7 @@ class PortfolioStore:
     def __init__(self, path: str = "state.json"):
         self._path = path
         self._positions: dict[str, Position] = {}
+        self._watchlist: set = set()
         self._load()
 
     def _load(self) -> None:
@@ -57,6 +58,7 @@ class PortfolioStore:
             for d in data.get("portfolio", []):
                 p = Position(**d)
                 self._positions[p.ticker.upper()] = p
+            self._watchlist = {t.upper() for t in data.get("watchlist", [])}
         except Exception as exc:
             logger.warning("Could not load portfolio from %s: %s", self._path, exc)
 
@@ -91,6 +93,29 @@ class PortfolioStore:
             self.save()
         return removed is not None
 
+    # ── Watchlist ──────────────────────────────────────────────────────────
+
+    def get_watchlist(self) -> List[str]:
+        return sorted(self._watchlist)
+
+    def watch(self, ticker: str) -> bool:
+        """Add ticker to watchlist. Returns True if it was new."""
+        t = ticker.upper()
+        if t in self._watchlist:
+            return False
+        self._watchlist.add(t)
+        self.save()
+        return True
+
+    def unwatch(self, ticker: str) -> bool:
+        """Remove ticker from watchlist. Returns True if it was present."""
+        t = ticker.upper()
+        if t not in self._watchlist:
+            return False
+        self._watchlist.discard(t)
+        self.save()
+        return True
+
     def save(self) -> None:
         # Merge with existing state.json without touching other keys
         data: dict = {}
@@ -101,6 +126,7 @@ class PortfolioStore:
             except Exception:
                 pass
         data["portfolio"] = [asdict(p) for p in self._positions.values()]
+        data["watchlist"] = sorted(self._watchlist)
         tmp = self._path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:

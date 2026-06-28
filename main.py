@@ -7,9 +7,14 @@ Usage:
 
   # Portfolio management
   python main.py --add AAPL 50 185.00        # add position (ticker shares buy_price)
-  python main.py --add AAPL 50 185.00 --note "IMVT MUY ALTA score=106"
+  python main.py --add AAPL 50 185.00 --note "MUY ALTA score=106"
   python main.py --remove AAPL               # remove position
   python main.py --portfolio                 # list current positions
+
+  # Watchlist (price alerts, no signal correlation needed)
+  python main.py --watch NVDA                # add ticker to watchlist
+  python main.py --unwatch NVDA              # remove from watchlist
+  python main.py --watchlist                 # show watchlist
 """
 from __future__ import annotations
 
@@ -74,7 +79,46 @@ def _cmd_portfolio(args) -> int:
             print(f"{'─'*55}\n")
         return 0
 
+    if args.watch:
+        ticker = args.watch.upper()
+        if store.watch(ticker):
+            print(f"✓ {ticker} agregado a watchlist. Alertarás cuando suba ≥7% en un día.")
+        else:
+            print(f"{ticker} ya estaba en la watchlist.")
+        return 0
+
+    if args.unwatch:
+        ticker = args.unwatch.upper()
+        if store.unwatch(ticker):
+            print(f"✓ {ticker} removido de la watchlist.")
+        else:
+            print(f"{ticker} no estaba en la watchlist.")
+        return 0
+
+    if args.watchlist:
+        wl = store.get_watchlist()
+        if not wl:
+            print("Watchlist vacía. Usa --watch TICKER para agregar acciones.")
+        else:
+            print(f"\n{'─'*40}")
+            print(f"  WATCHLIST ({len(wl)} ticker{'s' if len(wl) != 1 else ''})")
+            print(f"  Alerta cuando suba ≥{cfg_for_display()}% en un día")
+            print(f"{'─'*40}")
+            for t in wl:
+                print(f"  {t}")
+            print(f"{'─'*40}\n")
+        return 0
+
     return None   # no portfolio command matched
+
+
+def cfg_for_display() -> str:
+    """Returns watchlist threshold for display — loads config lazily."""
+    try:
+        from config import load_config
+        return str(load_config().watchlist_spike_pct)
+    except Exception:
+        return "7.0"
 
 
 def main() -> int:
@@ -97,6 +141,14 @@ def main() -> int:
                         help="List current portfolio positions.")
     parser.add_argument("--note", metavar="TEXT",
                         help="Optional note when adding a position (e.g. signal context).")
+
+    # ── Watchlist ──────────────────────────────────────────────────────────
+    parser.add_argument("--watch",    metavar="TICKER",
+                        help="Add a ticker to the price watchlist.")
+    parser.add_argument("--unwatch",  metavar="TICKER",
+                        help="Remove a ticker from the price watchlist.")
+    parser.add_argument("--watchlist", action="store_true",
+                        help="List all tickers in the price watchlist.")
 
     args = parser.parse_args()
 

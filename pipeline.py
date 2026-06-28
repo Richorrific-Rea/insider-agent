@@ -27,7 +27,7 @@ from price_client import PriceSnapshot, fetch_prices
 from exit_signals import ExitTierScore, detect_insider_sells, score_exit
 from finra_client import fetch_short_interest_batch
 from form4_parser import Transaction, parse_form4
-from notify import send_exit_alert, send_price_only_alert, send_signal, send_tier_score
+from notify import send_exit_alert, send_price_only_alert, send_signal, send_tier_score, send_watchlist_alert
 from options_client import fetch_unusual_options_batch
 from portfolio import PortfolioStore
 from scorer import TierScore, score_ticker
@@ -133,9 +133,14 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
         except Exception as exc:
             logger.warning("Options fetch failed: %s", exc)
 
-    # Fetch prices for ALL hot tickers upfront
+    # Fetch prices for ALL hot tickers + portfolio + watchlist
     price_data: Dict[str, object] = {}
-    all_price_tickers = hot_tickers | {p.ticker for p in PortfolioStore(path=cfg.state_file_path).get_positions()}
+    _pstore = PortfolioStore(path=cfg.state_file_path)
+    all_price_tickers = (
+        hot_tickers
+        | {p.ticker for p in _pstore.get_positions()}
+        | set(_pstore.get_watchlist())
+    )
     if all_price_tickers:
         try:
             price_data = fetch_prices(list(all_price_tickers))
@@ -306,7 +311,33 @@ def run_once(cfg: Config, dry_run: bool = False) -> int:
                     ticker, ps.pct_change_vs_close, ps.volume_ratio,
                 )
 
-    # ── 10. Persist ────────────────────────────────────────────────────────
+    # ── 10. Watchlist price scan ───────────────────────────────────────────
+    watchlist = _pstore.get_watchlist()
+    if watchlist:
+        logger.info("Scanning %d watchlist ticker(s) for price moves…", len(watchlist))
+        for ticker in watchlist:
+            ps = price_data.get(ticker)
+            if ps and ps.is_moving(cfg.watchlist_spike_pct):
+                # If this ticker also has insider signals this cycle, the
+                # combined message was already sent — skip standalone alert
+                if ticker in hot_tickers:
+                    logger.debug(
+                        "Watchlist %s already covered by signal message", ticker
+                    )
+                    continue
+                send_watchlist_alert(
+                    price_snapshot=ps,
+                    bot_token=cfg.telegram_bot_token,
+                    chat_id=cfg.telegram_chat_id,
+                    dry_run=dry_run,
+                )
+                notified += 1
+                logger.info(
+                    "Watchlist alert: %s +%.1f%% [%s]",
+                    ticker, ps.pct_change_vs_close, ps.spike_strength,
+                )
+
+    # ── 11. Persist ────────────────────────────────────────────────────────
     _persist(store, new_accessions, all_qualifying)
     return notified
 
