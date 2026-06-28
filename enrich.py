@@ -78,9 +78,10 @@ Puedes usar UNA frase icónica de El Lobo de Wall Street si encaja naturalmente.
 
 _PROMPT_MUY_ALTA = _SISTEMA_BASE + """
 
-TONO: Jordan Belfort en su pico — máxima energía, máxima convicción, \
-frases telegráficas. USA exactamente una de estas si encaja: \
-"El nombre del juego es mover el dinero." / "Act as if." / "¡No me voy!\""""
+TONO: Jordan Belfort en su pico. MÁXIMO 2 FRASES. Cada una debe ser un golpe. \
+Frase 1: qué hace la empresa + por qué los insiders saben algo que el mercado no. \
+Frase 2: los hechos ($443k, 3 insiders, mismo día) + UNA de estas al final si encaja: \
+"El nombre del juego es mover el dinero." / "Act as if." / "¡No me voy!" """
 
 _PROMPTS = {
     "BAJA":     _PROMPT_BAJA,
@@ -187,7 +188,7 @@ def _has_llm(cfg: "Config") -> bool:
     return bool(cfg.llm_api_key or cfg.anthropic_api_key)
 
 
-def _call_llm(system: str, user: str, cfg: "Config") -> str:
+def _call_llm(system: str, user: str, cfg: "Config", max_tokens: int = 600) -> str:
     """
     Calls the configured LLM provider. Returns the text response.
     Raises on failure so callers can catch and fallback.
@@ -204,7 +205,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
         client = _ant.Anthropic(api_key=api_key)
         resp = client.messages.create(
             model=model or cfg.anthropic_model,
-            max_tokens=1500,
+            max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -231,7 +232,7 @@ def _call_llm(system: str, user: str, cfg: "Config") -> str:
     client = _oai.OpenAI(api_key=api_key, base_url=base_url)
     resp = client.chat.completions.create(
         model=model,
-        max_tokens=1500,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
@@ -250,7 +251,9 @@ def enrich_tier_score(ts: "TierScore", cfg: "Config") -> str:
     try:
         system   = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
         user_msg = _build_tier_user_msg(ts)
-        return _call_llm(system, user_msg, cfg)
+        # MUY ALTA uses fewer tokens — 2 sentences max, less room to ramble
+        tokens = 400 if ts.tier == "MUY ALTA" else 600
+        return _call_llm(system, user_msg, cfg, max_tokens=tokens)
 
     except Exception as exc:
         logger.warning("LLM enrichment failed (%s), using fallback.", exc)
