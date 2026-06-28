@@ -1,6 +1,6 @@
 # insider-agent
 
-A signal pipeline + Telegram bot that monitors **7 independent data sources** plus **financial news**, cross-references them into a confidence score, and fires alerts written by a character somewhere between Jordan Belfort and Gordon Gekko.
+A signal Correlator + Telegram bot that monitors **7 independent data sources** plus **financial news**, cross-references them into a confidence score, and fires alerts written by a character somewhere between Jordan Belfort and Gordon Gekko.
 
 It watches what corporate insiders, politicians, activist investors, institutional funds, short sellers, and options traders are doing. **Any combination of signals with a high enough score fires an alert** — no Form 4 required. Financial news triggers a 5-day scan window so stocks in the news get automatically monitored for market signals.
 
