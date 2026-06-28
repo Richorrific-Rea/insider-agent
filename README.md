@@ -1,125 +1,277 @@
 # insider-agent
 
-Pipeline programado que sondea SEC EDGAR (Form 4), detecta **compras de insiders** con valor de señal, las enriquece con un LLM y avisa por Telegram.
+A scheduled pipeline that monitors **SEC EDGAR Form 4 filings**, congressional trading disclosures, activist investor filings, short interest, and unusual options activity — cross-references them into a confidence score, and sends actionable alerts to **Telegram**.
 
-> **Aviso legal:** Este sistema genera **ideas para investigar**, no recomendaciones de inversión. Toda señal incluye el disclaimer correspondiente. No uses este software como base para decisiones financieras.
+It also watches your portfolio and fires **exit alerts** when the same signals start reversing.
+
+> **Disclaimer:** This system generates **ideas to research**, not investment recommendations. Every alert includes a mandatory disclaimer. Do not use this software as the basis for financial decisions.
 
 ---
 
-## Arquitectura
+## What it does
 
-```
-EDGAR Atom feed (Form 4)
-       │
-       ▼
-edgar_client.py  ──→  form4_parser.py  ──→  signals.py
-                                                  │
-                                           passes_filters()
-                                           detect_clusters()
-                                                  │
-                                            enrich.py (Anthropic)
-                                                  │
-                                            notify.py (Telegram)
-                                                  │
-                                            state.py (dedup)
-```
+Every 15 minutes during market hours (Mon–Fri 9am–4pm ET), the pipeline:
 
-### Módulos
+1. Fetches the latest **SEC EDGAR Form 4** filings (corporate insider purchases)
+2. Cross-references **congressional trading disclosures** (Senate EFTS + House eFD)
+3. Pulls **activist investor filings** (SEC 13D / 13G — anyone crossing ≥5% stake)
+4. Fetches **institutional positions** (SEC 13F — funds with >$100M AUM)
+5. Checks **short interest** trends via Yahoo Finance
+6. Detects **unusual options activity** (call/put volume vs open interest)
+7. Scores each ticker across all active sources → **BAJA / MEDIA / ALTA / MUY ALTA**
+8. Enriches the alert with an **LLM brief** (personality scales with signal strength)
+9. Sends the result to **Telegram**
+10. Monitors your **portfolio** and fires exit alerts if the signals reverse
 
-| Archivo | Responsabilidad |
+---
+
+## Signal scoring
+
+Each independent source that confirms the same thesis adds points. The key insight is **independence** — a corporate insider and a senator don't coordinate. When both buy the same stock, that's two completely separate actors reaching the same conclusion.
+
+### Base weights
+
+| Signal | Points | Why |
+|---|---|---|
+| CEO / CFO / President buying (Form 4) | 30 | Maximum insider knowledge |
+| Director buying | 20 | High knowledge, less operational |
+| Other officer buying | 15 | Partial knowledge |
+| Politician buying (PTR) | 20 | Potential committee-level information |
+| **Activist 13D** | **40** | Highest weight — deep due diligence + intent to influence |
+| Passive 13G (≥5%) | 15 | High conviction, no active agenda |
+| Institutional 13F new position | 10/fund, max 25 | Accumulation signal |
+| Short interest declining | 15 | Short sellers covering |
+| Unusual call options | 25 | Most forward-looking signal |
+
+### Multipliers
+
+**Magnitude** (trade size):
+
+| Range | Multiplier |
 |---|---|
-| `config.py` | Carga configuración desde env / `.env` |
-| `edgar_client.py` | Descarga feed Atom + XML de filings |
-| `form4_parser.py` | Parsea ownershipDocument XML → `Transaction` |
-| `signals.py` | Filtros duros + detección de clusters |
-| `enrich.py` | Brief factual vía Anthropic API (fallback a texto plano) |
-| `notify.py` | Envía mensaje a Telegram (MarkdownV2) + disclaimer |
-| `state.py` | Dedup de accessions + caché cross-poll (File / Firestore / GCS) |
-| `pipeline.py` | Orquesta el ciclo completo |
-| `main.py` | Entrypoint cron/local (`--once`, `--dry-run`) |
-| `cloud_function.py` | Entrypoint GCP Cloud Functions gen2 |
+| < $100k | ×0.5 |
+| $100k – $500k | ×1.0 |
+| $500k – $1M | ×1.3 |
+| $1M – $5M | ×1.6 |
+| > $5M | ×2.0 |
+
+**Recency** (days since trade):
+
+| Days | Multiplier |
+|---|---|
+| 0–3 | ×1.2 |
+| 4–7 | ×1.0 |
+| 8–14 | ×0.8 |
+| 15–30 | ×0.6 |
+| > 30 | ×0.3 |
+
+### Bonuses
+
+- **Insider cluster** (2+ distinct insiders buying same stock in one week): +10 / +20
+- **Convergence** (number of independent signal types firing): +10 / +25 / +40 / +55
+
+### Tiers
+
+| Score | Tier | Description |
+|---|---|---|
+| 0 – 25 | **BAJA** | Single weak signal — log it |
+| 26 – 55 | **MEDIA** | Solid signal, worth investigating |
+| 56 – 85 | **ALTA** | Multiple independent sources converging |
+| 86 + | **MUY ALTA** | Strong convergence — priority research |
 
 ---
 
-## Instalación rápida
+## LLM personality
+
+The agent's tone scales with signal strength. It acts like an **80s Wall Street broker** — calm and analytical at low tiers, progressively unhinged at MUY ALTA:
+
+- **BAJA** → sober analyst, just the facts
+- **MEDIA** → experienced broker, something interesting here
+- **ALTA** → energetic 80s broker, "the smart money is moving"
+- **MUY ALTA** → fully unhinged, CAPS LOCK, "THIS IS A MONSTER SETUP BABY"
+
+The facts are always accurate. Only the tone changes. The disclaimer is always present.
+
+Supports any LLM provider — Groq and Gemini have **free tiers**:
+
+| Provider | Set via `LLM_PROVIDER=` | Free tier |
+|---|---|---|
+| Anthropic | `anthropic` | No |
+| OpenAI | `openai` | No |
+| **Groq** | `groq` | **Yes** |
+| **Google Gemini** | `gemini` | **Yes** |
+| Ollama (local) | `ollama` | **Yes** |
+| Any OpenAI-compatible | `custom` + `LLM_BASE_URL` | Varies |
+
+---
+
+## Portfolio tracking & exit alerts
+
+The agent remembers positions you've entered and monitors them for **exit signals** — the mirror of the entry signals but for sells:
+
+- Insiders selling (Form 4, open-market sales)
+- Politicians selling (PTR)
+- Activists reducing stake
+- Short interest rising
+- Unusual PUT options
+
+Exit alerts only fire at **ALTA (56+)** or **MUY ALTA (86+)** to avoid noise — insider selling is noisier than buying.
 
 ```bash
-# Instala dependencias y lanza el wizard de configuración
+# After the agent sends a signal and you decide to buy:
+python main.py --add IMVT 500 5.62 --note "MUY ALTA score=106 — 3 insiders same day"
+
+# View your portfolio:
+python main.py --portfolio
+
+# When you exit the position:
+python main.py --remove IMVT
+```
+
+---
+
+## Quick start
+
+### Requirements
+- Python 3.11+
+- Git
+- A Telegram account (to receive alerts)
+
+### Install & configure
+
+```bash
+git clone https://github.com/Richorrific-Rea/insider-agent.git
+cd insider-agent
+
+# Install dependencies and run the interactive setup wizard
 make setup
 ```
 
-El wizard te guía por cada variable paso a paso: EDGAR User-Agent, Anthropic API key, Telegram bot (con auto-detección del chat ID) y filtros. Si prefieres configurar a mano:
+The wizard walks you through:
+1. **EDGAR User-Agent** — your name + email (required by SEC fair-access policy)
+2. **LLM API key** — Groq or Gemini are free; skip for plain-text fallback
+3. **Telegram bot** — creates bot via @BotFather, auto-detects your chat ID, sends a test message
+4. **Signal filters** — optional (defaults work well out of the box)
+
+### Test it
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Edita .env con tu editor
+python main.py --once --dry-run   # prints signals to terminal, no Telegram
+python main.py --once             # live run
 ```
 
-## Ejecución local
+### Schedule it (runs every 15 min automatically)
 
 ```bash
-# Dry-run: imprime señales en stdout sin postear a Telegram
-python main.py --once --dry-run
-
-# Live: envía a Telegram
-python main.py --once
+make install-launchd    # macOS (recommended)
+make install-cron       # Linux or macOS
+make install-systemd    # Linux with systemd
 ```
-
-## Variables de entorno
-
-Ver [.env.example](.env.example) para la lista completa con descripción.
-
-Las obligatorias:
-- `EDGAR_USER_AGENT` — `"Tu Nombre tu@email.com"` (requerido por SEC)
-
-Las opcionales clave:
-- `ANTHROPIC_API_KEY` — para briefs enriquecidos; sin ella usa texto plano
-- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — para notificaciones; sin ellos solo funciona `--dry-run`
 
 ---
 
-## Deploy
+## Architecture
 
-Hay dos opciones:
-
-### Opción A — VM local / máquina propia
-
-Ver [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) para la guía completa. Resumen rápido:
-
-```bash
-# crontab (Linux / macOS)
-make install-cron
-
-# systemd timer (Linux)
-make install-systemd
-
-# launchd (macOS)
-make install-launchd
+```
+EDGAR Atom feed (Form 4)
+Congressional PTR (Senate + House)
+EDGAR 13D / 13G (activists)            ─→  scorer.py  ─→  enrich.py  ─→  notify.py
+EDGAR 13F (institutional funds)              (score +       (LLM brief    (Telegram)
+Yahoo Finance short interest                  tier)          per tier)
+Yahoo Finance options chain
+         │
+         ▼
+    portfolio.py  ←── user adds positions
+         │
+         ▼
+    exit_signals.py  ─→  Telegram exit alert
 ```
 
-### Opción B — GCP Cloud Functions gen2
+### Module map
 
-Ver [DEPLOY.md](DEPLOY.md) para la guía completa. Resumen:
-1. `gcloud auth login`
-2. `make gcp-enable-apis && make gcp-create-sa && make gcp-create-secrets`
-3. `make deploy`
-4. `make scheduler`
+| File | Responsibility |
+|---|---|
+| `config.py` | Env-based Config dataclass with validation |
+| `edgar_client.py` | EDGAR Atom feed + XML downloader (rate-limited) |
+| `form4_parser.py` | ownershipDocument XML → `Transaction` |
+| `congress_client.py` | Senate EFTS + House eFD congressional trades |
+| `congress_parser.py` | `PoliticianTrade` dataclass |
+| `sec_extra_client.py` | EDGAR 13D / 13G / 13F fetching and parsing |
+| `finra_client.py` | Short interest via Yahoo Finance |
+| `options_client.py` | Unusual options via Yahoo Finance options chain |
+| `signals.py` | Hard filters + cluster detection |
+| `scorer.py` | Multi-source scoring engine → `TierScore` |
+| `enrich.py` | LLM brief with personality tiers (multi-provider) |
+| `notify.py` | Telegram messages with tier-appropriate formatting |
+| `exit_signals.py` | Exit signal detection + scoring |
+| `portfolio.py` | User portfolio positions store |
+| `pipeline.py` | Full orchestration (entry + exit cycles) |
+| `main.py` | CLI entrypoint (`--once`, `--dry-run`, `--add`, `--portfolio`) |
+| `cloud_function.py` | GCP Cloud Functions gen2 HTTP entrypoint |
+| `setup.py` | Interactive configuration wizard |
+| `state.py` | Dedup + cache (File / Firestore / GCS backends) |
 
 ---
 
-## Tests
+## Configuration
+
+All configuration is via environment variables. Copy `.env.example` to `.env` and fill in:
+
+| Variable | Required | Description |
+|---|---|---|
+| `EDGAR_USER_AGENT` | **Yes** | `"Your Name your@email.com"` — SEC fair-access policy |
+| `LLM_PROVIDER` | No | `anthropic` / `groq` / `gemini` / `openai` / `ollama` / `custom` |
+| `LLM_API_KEY` | No | API key for chosen provider (skip for plain-text fallback) |
+| `TELEGRAM_BOT_TOKEN` | No | From @BotFather |
+| `TELEGRAM_CHAT_ID` | No | Auto-detected by setup wizard |
+| `MIN_TRADE_VALUE_USD` | No | Minimum insider trade size (default: $100,000) |
+| `ALLOWED_ROLES` | No | `CEO,CFO,PRES,DIR` (default) |
+| `STATE_BACKEND` | No | `file` (default) / `firestore` / `gcs` |
+
+See `.env.example` for the full list with descriptions.
+
+---
+
+## Deployment options
+
+### A — Local machine / Mac (recommended to start)
 
 ```bash
-pip install pytest
-pytest tests/ -v
+make install-launchd    # macOS background agent
+make install-cron       # crontab (Linux / macOS)
+make install-systemd    # systemd timer (Linux)
+```
+
+See [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) for the full guide.
+
+### B — GCP Cloud Functions gen2
+
+```bash
+gcloud auth login
+make gcp-enable-apis
+make gcp-create-sa
+make gcp-create-secrets   # paste keys interactively
+make deploy
+make scheduler            # Cloud Scheduler: every 15 min, Mon–Fri, 9am–4pm ET
+```
+
+See [DEPLOY.md](DEPLOY.md) for the full guide.
+
+---
+
+## Development
+
+```bash
+make install    # create venv + install deps
+make test       # run pytest (73 tests, no network)
+make run-dry    # one cycle, dry run
+make lint       # py_compile all modules
 ```
 
 ---
 
 ## Guardrails
 
-- **Sin asesoría financiera:** El LLM tiene un system prompt que prohíbe explícitamente recomendaciones de precio. Telegram incluye siempre el disclaimer.
-- **EDGAR fair access:** User-Agent identificable + ≤10 req/s (≥0.15 s entre requests).
-- **Secretos fuera del repo:** `.env` y `state.json` están en `.gitignore`.
+- **No financial advice** — the LLM system prompt explicitly prohibits price predictions or buy/sell recommendations. Every Telegram message includes a mandatory disclaimer.
+- **EDGAR fair access** — identifiable User-Agent header + ≤10 req/s (≥0.15s between requests). Do not remove the rate limiter.
+- **Secrets stay local** — `.env` and `state.json` are in `.gitignore`. Never commit API keys or tokens.
