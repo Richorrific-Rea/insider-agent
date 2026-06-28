@@ -232,10 +232,10 @@ make install-cron       # alternative via crontab
 
 **1 — Install Python and dependencies**
 ```bash
-sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip git make
+sudo apt update && sudo apt install -y python3-venv python3-pip git make
 ```
 
-> Fedora/RHEL: `sudo dnf install python3.11 git make`
+> Fedora/RHEL: `sudo dnf install python3 git make`
 > Arch: `sudo pacman -S python git make`
 
 **2 — Clone and set up**
