@@ -1,14 +1,21 @@
 """
-LLM enrichment via Anthropic API.
+LLM enrichment — multi-provider.
 
-The agent has a personality that scales with signal strength:
+Proveedores soportados vía LLM_PROVIDER:
+  anthropic  — Claude (default)
+  openai     — GPT-4o, GPT-4o-mini, etc.
+  groq       — llama-3.1-70b, mixtral (free tier)
+  gemini     — gemini-1.5-flash (free tier)
+  ollama     — modelos locales (sin internet, sin costo)
+  custom     — cualquier endpoint OpenAI-compatible (LLM_BASE_URL)
 
+Personalidad escala con el tier de la señal:
   BAJA     → analista sobrio y metódico
   MEDIA    → broker interesado, empieza a emocionarse
   ALTA     → broker de los 80 con energía alta
-  MUY ALTA → broker de los 80 completamente desatado, adicto a la adrenalina
+  MUY ALTA → broker de los 80 completamente desatado
 
-Nunca da recomendaciones de inversión. Solo hechos — pero con actitud.
+Nunca da recomendaciones de inversión. Solo hechos — con actitud.
 """
 from __future__ import annotations
 
@@ -101,27 +108,89 @@ def _fallback_signal(signal: "Signal") -> str:
     )
 
 
+# ── Multi-provider LLM client ─────────────────────────────────────────────────
+
+# Default models per provider
+_DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-3-5",
+    "openai":    "gpt-4o-mini",
+    "groq":      "llama-3.1-70b-versatile",
+    "gemini":    "gemini-1.5-flash",
+    "ollama":    "llama3.2",
+    "custom":    "gpt-4o-mini",
+}
+
+_GROQ_BASE    = "https://api.groq.com/openai/v1"
+_GEMINI_BASE  = "https://generativelanguage.googleapis.com/v1beta/openai"
+_OLLAMA_BASE  = "http://localhost:11434/v1"
+
+
+def _has_llm(cfg: "Config") -> bool:
+    """True if any LLM credentials are configured."""
+    return bool(cfg.llm_api_key or cfg.anthropic_api_key)
+
+
+def _call_llm(system: str, user: str, cfg: "Config") -> str:
+    """
+    Calls the configured LLM provider. Returns the text response.
+    Raises on failure so callers can catch and fallback.
+    """
+    provider = cfg.llm_provider.lower()
+
+    # Resolve effective API key and model
+    api_key = cfg.llm_api_key or cfg.anthropic_api_key
+    model   = cfg.llm_model or _DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+
+    # ── Anthropic (native SDK) ─────────────────────────────────────────────
+    if provider == "anthropic":
+        import anthropic as _ant
+        client = _ant.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model or cfg.anthropic_model,
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return resp.content[0].text.strip()
+
+    # ── OpenAI-compatible (openai, groq, gemini, ollama, custom) ──────────
+    import openai as _oai
+
+    base_urls = {
+        "groq":   _GROQ_BASE,
+        "gemini": _GEMINI_BASE,
+        "ollama": cfg.llm_base_url or _OLLAMA_BASE,
+        "custom": cfg.llm_base_url,
+    }
+    base_url = base_urls.get(provider) or cfg.llm_base_url or None
+
+    # Ollama doesn't require a real API key
+    if provider == "ollama" and not api_key:
+        api_key = "ollama"
+
+    client = _oai.OpenAI(api_key=api_key, base_url=base_url)
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=400,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ],
+    )
+    return resp.choices[0].message.content.strip()
+
+
 # ── TierScore enrichment (main path) ──────────────────────────────────────────
 
 def enrich_tier_score(ts: "TierScore", cfg: "Config") -> str:
     """Generate a brief for a fully-scored TierScore. Never raises."""
-    if not cfg.anthropic_api_key:
+    if not _has_llm(cfg):
         return _fallback_tier(ts)
 
     try:
-        import anthropic
-
-        system = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
+        system   = _PROMPTS.get(ts.tier, _PROMPT_MEDIA)
         user_msg = _build_tier_user_msg(ts)
-
-        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-        resp = client.messages.create(
-            model=cfg.anthropic_model,
-            max_tokens=400,
-            system=system,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        return resp.content[0].text.strip()
+        return _call_llm(system, user_msg, cfg)
 
     except Exception as exc:
         logger.warning("LLM enrichment failed (%s), using fallback.", exc)
@@ -188,11 +257,10 @@ def _build_tier_user_msg(ts: "TierScore") -> str:
 
 def enrich_signal(signal: "Signal", cfg: "Config") -> str:
     """For single signals not yet scored. Falls back to MEDIA personality."""
-    if not cfg.anthropic_api_key:
+    if not _has_llm(cfg):
         return _fallback_signal(signal)
 
     try:
-        import anthropic
         txn = signal.transaction
         user_msg = (
             f"Insider: {txn.owner_name}, cargo: {txn.officer_title or ', '.join(txn.role_labels)}.\n"
@@ -201,14 +269,7 @@ def enrich_signal(signal: "Signal", cfg: "Config") -> str:
             f"el {txn.transaction_date}.\n"
             f"Tenencia post: {txn.shares_owned_following:,.0f} acc.\n"
         )
-        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-        resp = client.messages.create(
-            model=cfg.anthropic_model,
-            max_tokens=300,
-            system=_PROMPT_MEDIA,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        return resp.content[0].text.strip()
+        return _call_llm(_PROMPT_MEDIA, user_msg, cfg)
     except Exception as exc:
         logger.warning("LLM signal enrichment failed (%s).", exc)
         return _fallback_signal(signal)

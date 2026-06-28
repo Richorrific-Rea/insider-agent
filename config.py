@@ -28,7 +28,14 @@ class Config:
     cluster_window_days: int = 7
     cluster_min_insiders: int = 2
 
-    # ── Anthropic ──────────────────────────────────────────────────────────
+    # ── LLM (cualquier proveedor) ──────────────────────────────────────────
+    # Proveedor: anthropic | openai | groq | gemini | ollama | custom
+    llm_provider: str = "anthropic"
+    llm_api_key: str = ""        # API key del proveedor elegido
+    llm_model: str = ""          # se elige default por proveedor si está vacío
+    llm_base_url: str = ""       # para proveedores OpenAI-compatibles / Ollama
+
+    # Retrocompatibilidad — si sólo está ANTHROPIC_API_KEY configurado, funciona igual
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
@@ -94,6 +101,10 @@ def load_config() -> Config:
         min_delta_own_pct=_float("MIN_DELTA_OWN_PCT", 0.0),
         cluster_window_days=_int("CLUSTER_WINDOW_DAYS", 7),
         cluster_min_insiders=_int("CLUSTER_MIN_INSIDERS", 2),
+        llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),
+        llm_api_key=os.getenv("LLM_API_KEY", ""),
+        llm_model=os.getenv("LLM_MODEL", ""),
+        llm_base_url=os.getenv("LLM_BASE_URL", ""),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
