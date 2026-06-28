@@ -22,9 +22,10 @@ import requests
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
-DISCLAIMER = (
-    "_Idea para investigar basada en datos públicos \\(SEC EDGAR, divulgaciones del Congreso\\)\\. "
-    "No es recomendación de inversión\\._"
+_DISCLAIMER_RAW = (
+    "Idea para investigar basada en datos públicos "
+    "(SEC EDGAR, divulgaciones del Congreso). "
+    "No es recomendación de inversión."
 )
 
 _MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
@@ -167,12 +168,7 @@ def _build_tier_message(ts: "TierScore", brief: str) -> str:
     # ── Brief ──────────────────────────────────────────────────────────────
     lines.append(f"\n{_e(brief)}")
 
-    # ── Link ───────────────────────────────────────────────────────────────
-    primary = ts.insider_signals[0].transaction if ts.insider_signals else None
-    if primary and primary.filing_url:
-        lines.append(f"\n[{_e('Ver en SEC EDGAR')}]({primary.filing_url})")
-
-    lines.append(f"\n{DISCLAIMER}")
+    lines.append(f"\n{_e(_DISCLAIMER_RAW)}")
     return "\n".join(lines)
 
 
@@ -199,10 +195,9 @@ def send_signal(
         f"*Tenencia post:* {_shares(txn.shares_owned_following)} acc",
         "",
         _e(brief),
+        "",
+        _e(_DISCLAIMER_RAW),
     ]
-    if txn.filing_url:
-        lines.append(f"\n[{_e('Ver en SEC EDGAR')}]({txn.filing_url})")
-    lines.append(f"\n{DISCLAIMER}")
 
     _send("\n".join(lines), bot_token, chat_id, dry_run,
           label=f"Signal {txn.ticker}")
